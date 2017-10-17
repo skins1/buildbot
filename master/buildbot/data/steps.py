@@ -13,9 +13,13 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.internet import defer
+
 from buildbot.data import base
 from buildbot.data import types
-from twisted.internet import defer
 
 
 class Db2DataMixin(object):
@@ -29,9 +33,10 @@ class Db2DataMixin(object):
             'started_at': dbdict['started_at'],
             'complete': dbdict['complete_at'] is not None,
             'complete_at': dbdict['complete_at'],
-            'state_strings': dbdict['state_strings'],
+            'state_string': dbdict['state_string'],
             'results': dbdict['results'],
             'urls': dbdict['urls'],
+            'hidden': dbdict['hidden'],
         }
         return defer.succeed(data)
 
@@ -45,7 +50,9 @@ class StepEndpoint(Db2DataMixin, base.BuildNestingMixin, base.Endpoint):
         /builds/n:buildid/steps/n:step_number
         /builders/n:builderid/builds/n:build_number/steps/i:step_name
         /builders/n:builderid/builds/n:build_number/steps/n:step_number
-    """
+        /builders/i:buildername/builds/n:build_number/steps/i:step_name
+        /builders/i:buildername/builds/n:build_number/steps/n:step_number
+        """
 
     @defer.inlineCallbacks
     def get(self, resultSpec, kwargs):
@@ -71,6 +78,7 @@ class StepsEndpoint(Db2DataMixin, base.BuildNestingMixin, base.Endpoint):
     pathPatterns = """
         /builds/n:buildid/steps
         /builders/n:builderid/builds/n:build_number/steps
+        /builders/i:buildername/builds/n:build_number/steps
     """
 
     @defer.inlineCallbacks
@@ -82,19 +90,10 @@ class StepsEndpoint(Db2DataMixin, base.BuildNestingMixin, base.Endpoint):
             if buildid is None:
                 return
         steps = yield self.master.db.steps.getSteps(buildid=buildid)
-        defer.returnValue([(yield self.db2data(dbdict)) for dbdict in steps])
-
-    def startConsuming(self, callback, options, kwargs):
-        if 'stepid' in kwargs:
-            return self.master.mq.startConsuming(
-                callback,
-                ('steps', str(kwargs['stepid']), None))
-        elif 'buildid' in kwargs:
-            return self.master.mq.startConsuming(
-                callback,
-                ('builds', str(kwargs['buildid']), 'steps', None, None))
-        else:
-            raise NotImplementedError("cannot consume from this path")
+        results = []
+        for dbdict in steps:
+            results.append((yield self.db2data(dbdict)))
+        defer.returnValue(results)
 
 
 class Step(base.ResourceType):
@@ -117,12 +116,13 @@ class Step(base.ResourceType):
         complete = types.Boolean()
         complete_at = types.NoneOk(types.DateTime())
         results = types.NoneOk(types.Integer())
-        state_strings = types.List(of=types.String())
+        state_string = types.String()
         urls = types.List(
             of=types.Dict(
                 name=types.String(),
                 url=types.String()
             ))
+        hidden = types.Boolean()
     entityType = EntityType(name)
 
     @defer.inlineCallbacks
@@ -132,9 +132,9 @@ class Step(base.ResourceType):
 
     @base.updateMethod
     @defer.inlineCallbacks
-    def newStep(self, buildid, name):
+    def addStep(self, buildid, name):
         stepid, num, name = yield self.master.db.steps.addStep(
-            buildid=buildid, name=name, state_strings=[u'pending'])
+            buildid=buildid, name=name, state_string=u'pending')
         yield self.generateEvent(stepid, 'new')
         defer.returnValue((stepid, num, name))
 
@@ -146,9 +146,9 @@ class Step(base.ResourceType):
 
     @base.updateMethod
     @defer.inlineCallbacks
-    def setStepStateStrings(self, stepid, state_strings):
-        yield self.master.db.steps.setStepStateStrings(
-            stepid=stepid, state_strings=state_strings)
+    def setStepStateString(self, stepid, state_string):
+        yield self.master.db.steps.setStepStateString(
+            stepid=stepid, state_string=state_string)
         yield self.generateEvent(stepid, 'updated')
 
     @base.updateMethod
@@ -160,7 +160,7 @@ class Step(base.ResourceType):
 
     @base.updateMethod
     @defer.inlineCallbacks
-    def finishStep(self, stepid, results):
+    def finishStep(self, stepid, results, hidden):
         yield self.master.db.steps.finishStep(
-            stepid=stepid, results=results)
+            stepid=stepid, results=results, hidden=hidden)
         yield self.generateEvent(stepid, 'finished')

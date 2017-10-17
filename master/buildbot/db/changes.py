@@ -17,15 +17,22 @@
 Support for changes in the database
 """
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import iteritems
+from future.utils import itervalues
+
+import json
+
 import sqlalchemy as sa
+
+from twisted.internet import defer
+from twisted.internet import reactor
+from twisted.python import log
 
 from buildbot.db import base
 from buildbot.util import datetime2epoch
 from buildbot.util import epoch2datetime
-from buildbot.util import json
-from twisted.internet import defer
-from twisted.internet import reactor
-from twisted.python import log
 
 
 class ChDict(dict):
@@ -35,21 +42,40 @@ class ChDict(dict):
 class ChangesConnectorComponent(base.DBConnectorComponent):
     # Documentation is in developer/db.rst
 
+    def getParentChangeIds(self, branch, repository, project, codebase):
+        def thd(conn):
+            changes_tbl = self.db.model.changes
+            q = sa.select([changes_tbl.c.changeid],
+                          whereclause=((changes_tbl.c.branch == branch) &
+                                       (changes_tbl.c.repository == repository) &
+                                       (changes_tbl.c.project == project) &
+                                       (changes_tbl.c.codebase == codebase)),
+                          order_by=sa.desc(changes_tbl.c.changeid),
+                          limit=1)
+            parent_id = conn.scalar(q)
+            return [parent_id] if parent_id else []
+
+        return self.db.pool.do(thd)
+
     @defer.inlineCallbacks
     def addChange(self, author=None, files=None, comments=None, is_dir=None,
                   revision=None, when_timestamp=None, branch=None,
-                  category=None, revlink='', properties={}, repository='', codebase='',
+                  category=None, revlink='', properties=None, repository='', codebase='',
                   project='', uid=None, _reactor=reactor):
         assert project is not None, "project must be a string, not None"
         assert repository is not None, "repository must be a string, not None"
+
         if is_dir is not None:
             log.msg("WARNING: change source is providing deprecated "
                     "value is_dir (ignored)")
         if when_timestamp is None:
             when_timestamp = epoch2datetime(_reactor.seconds())
 
+        if properties is None:
+            properties = {}
+
         # verify that source is 'Change' for each property
-        for pv in properties.values():
+        for pv in itervalues(properties):
             assert pv[1] == 'Change', ("properties must be qualified with"
                                        "source 'Change'")
 
@@ -67,6 +93,11 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
         ssid = yield self.db.sourcestamps.findSourceStampId(
             revision=revision, branch=branch, repository=repository,
             codebase=codebase, project=project, _reactor=_reactor)
+
+        parent_changeids = yield self.getParentChangeIds(branch, repository, project, codebase)
+        # Someday, changes will have multiple parents.
+        # But for the moment, a Change can only have 1 parent
+        parent_changeid = parent_changeids[0] if parent_changeids else None
 
         def thd(conn):
             # note that in a read-uncommitted database like SQLite this
@@ -88,7 +119,8 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
                 repository=repository,
                 codebase=codebase,
                 project=project,
-                sourcestampid=ssid))
+                sourcestampid=ssid,
+                parent_changeids=parent_changeid))
             changeid = r.inserted_primary_key[0]
             if files:
                 tbl = self.db.model.change_files
@@ -104,13 +136,11 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
                     dict(changeid=changeid,
                          property_name=k,
                          property_value=json.dumps(v))
-                    for k, v in properties.iteritems()
+                    for k, v in iteritems(properties)
                 ]
                 for i in inserts:
                     self.checkLength(tbl.c.property_name,
                                      i['property_name'])
-                    self.checkLength(tbl.c.property_value,
-                                     i['property_value'])
 
                 conn.execute(tbl.insert(), inserts)
             if uid:
@@ -129,7 +159,68 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
         def thd(conn):
             # get the row from the 'changes' table
             changes_tbl = self.db.model.changes
-            q = changes_tbl.select(whereclause=(changes_tbl.c.changeid == changeid))
+            q = changes_tbl.select(
+                whereclause=(changes_tbl.c.changeid == changeid))
+            rp = conn.execute(q)
+            row = rp.fetchone()
+            if not row:
+                return None
+            # and fetch the ancillary data (files, properties)
+            return self._chdict_from_change_row_thd(conn, row)
+
+        return self.db.pool.do(thd)
+
+    @defer.inlineCallbacks
+    def getChangesForBuild(self, buildid):
+        assert buildid > 0
+
+        gssfb = self.master.db.sourcestamps.getSourceStampsForBuild
+        changes = list()
+        currentBuild = yield self.master.db.builds.getBuild(buildid)
+        fromChanges, toChanges = dict(), dict()
+        ssBuild = yield gssfb(buildid)
+        for ss in ssBuild:
+            fromChanges[ss['codebase']] = yield self.getChangeFromSSid(ss['ssid'])
+
+        # Get the last successful build on the same builder
+        previousBuild = yield self.master.db.builds.getPrevSuccessfulBuild(currentBuild['builderid'],
+                                                                           currentBuild[
+                                                                               'number'],
+                                                                           ssBuild)
+        if previousBuild:
+            for ss in (yield gssfb(previousBuild['id'])):
+                toChanges[ss['codebase']] = yield self.getChangeFromSSid(ss['ssid'])
+        else:
+            # If no successful previous build, then we need to catch all
+            # changes
+            for cb in fromChanges:
+                toChanges[cb] = {'changeid': None}
+
+        # For each codebase, append changes until we match the parent
+        for cb, change in iteritems(fromChanges):
+            # Careful; toChanges[cb] may be None from getChangeFromSSid
+            toCbChange = toChanges.get(cb) or {}
+            if change and change['changeid'] != toCbChange.get('changeid'):
+                changes.append(change)
+                while ((toCbChange.get('changeid') not in change['parent_changeids']) and
+                       change['parent_changeids']):
+                    # For the moment, a Change only have 1 parent.
+                    change = yield self.master.db.changes.getChange(change['parent_changeids'][0])
+                    # http://trac.buildbot.net/ticket/3461 sometimes,
+                    # parent_changeids could be corrupted
+                    if change is None:
+                        break
+                    changes.append(change)
+        defer.returnValue(changes)
+
+    def getChangeFromSSid(self, sourcestampid):
+        assert sourcestampid >= 0
+
+        def thd(conn):
+            # get the row from the 'changes' table
+            changes_tbl = self.db.model.changes
+            q = changes_tbl.select(
+                whereclause=(changes_tbl.c.sourcestampid == sourcestampid))
             rp = conn.execute(q)
             row = rp.fetchone()
             if not row:
@@ -166,10 +257,10 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
         d = self.db.pool.do(thd)
 
         # then turn those into changes, using the cache
+        @d.addCallback
         def get_changes(changeids):
             return defer.gatherResults([self.getChange(changeid)
                                         for changeid in changeids])
-        d.addCallback(get_changes)
         return d
 
     def getChanges(self):
@@ -184,10 +275,10 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
         d = self.db.pool.do(thd)
 
         # then turn those into changes, using the cache
+        @d.addCallback
         def get_changes(changeids):
             return defer.gatherResults([self.getChange(changeid)
                                         for changeid in changeids])
-        d.addCallback(get_changes)
         return d
 
     def getChangesCount(self):
@@ -255,8 +346,14 @@ class ChangesConnectorComponent(base.DBConnectorComponent):
         change_files_tbl = self.db.model.change_files
         change_properties_tbl = self.db.model.change_properties
 
+        if ch_row.parent_changeids:
+            parent_changeids = [ch_row.parent_changeids]
+        else:
+            parent_changeids = []
+
         chdict = ChDict(
             changeid=ch_row.changeid,
+            parent_changeids=parent_changeids,
             author=ch_row.author,
             files=[],  # see below
             comments=ch_row.comments,

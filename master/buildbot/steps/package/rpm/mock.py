@@ -17,6 +17,9 @@
 Steps and objects related to mock building.
 """
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import re
 
 from buildbot import config
@@ -45,6 +48,8 @@ class Mock(ShellCommand):
     for the root and resultdir parameter of mock."""
 
     name = "mock"
+
+    renderables = ["root", "resultdir"]
 
     haltOnFailure = 1
     flunkOnFailure = 1
@@ -95,13 +100,13 @@ class Mock(ShellCommand):
         self.addLogObserver('state.log', MockStateObserver())
 
         cmd = remotecommand.RemoteCommand('rmdir', {'dir':
-                                                    map(lambda l: self.build.path_module.join('build', self.logfiles[l]),
-                                                        self.mock_logfiles)})
+                                                    [self.build.path_module.join('build', self.logfiles[l])
+                                                     for l in self.mock_logfiles]})
         d = self.runCommand(cmd)
 
+        @d.addCallback
         def removeDone(cmd):
             ShellCommand.start(self)
-        d.addCallback(removeDone)
         d.addErrback(self.failed)
 
 

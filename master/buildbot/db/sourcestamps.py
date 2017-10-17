@@ -13,13 +13,20 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import base64
 
-from buildbot.db import base
-from buildbot.util import epoch2datetime
+import sqlalchemy as sa
+
 from twisted.internet import defer
 from twisted.internet import reactor
 from twisted.python import log
+
+from buildbot.db import base
+from buildbot.util import epoch2datetime
+from buildbot.util import unicode2bytes
 
 
 class SsDict(dict):
@@ -31,7 +38,7 @@ class SsList(list):
 
 
 class SourceStampsConnectorComponent(base.DBConnectorComponent):
-    # Documentation is in developer/db.rst
+    # Documentation is in developer/database.rst
 
     @defer.inlineCallbacks
     def findSourceStampId(self, branch=None, revision=None, repository=None,
@@ -53,10 +60,11 @@ class SourceStampsConnectorComponent(base.DBConnectorComponent):
         def thd(conn):
             patchid = None
             if patch_body:
+                patch_body_bytes = unicode2bytes(patch_body)
                 ins = self.db.model.patches.insert()
                 r = conn.execute(ins, dict(
                     patchlevel=patch_level,
-                    patch_base64=base64.b64encode(patch_body),
+                    patch_base64=base64.b64encode(patch_body_bytes),
                     patch_author=patch_author,
                     patch_comment=patch_comment,
                     subdir=patch_subdir))
@@ -93,6 +101,34 @@ class SourceStampsConnectorComponent(base.DBConnectorComponent):
             ssdict = self._rowToSsdict_thd(conn, row)
             res.close()
             return ssdict
+        return self.db.pool.do(thd)
+
+    def getSourceStampsForBuild(self, buildid):
+        assert buildid > 0
+
+        def thd(conn):
+            # Get SourceStamps for the build
+            builds_tbl = self.db.model.builds
+            reqs_tbl = self.db.model.buildrequests
+            bsets_tbl = self.db.model.buildsets
+            bsss_tbl = self.db.model.buildset_sourcestamps
+            sstamps_tbl = self.db.model.sourcestamps
+
+            from_clause = builds_tbl.join(reqs_tbl,
+                                          builds_tbl.c.buildrequestid == reqs_tbl.c.id)
+            from_clause = from_clause.join(bsets_tbl,
+                                           reqs_tbl.c.buildsetid == bsets_tbl.c.id)
+            from_clause = from_clause.join(bsss_tbl,
+                                           bsets_tbl.c.id == bsss_tbl.c.buildsetid)
+            from_clause = from_clause.join(sstamps_tbl,
+                                           bsss_tbl.c.sourcestampid == sstamps_tbl.c.id)
+
+            q = sa.select([sstamps_tbl]).select_from(
+                from_clause).where(builds_tbl.c.id == buildid)
+            res = conn.execute(q)
+            return [self._rowToSsdict_thd(conn, row)
+                    for row in res.fetchall()]
+
         return self.db.pool.do(thd)
 
     def getSourceStamps(self):

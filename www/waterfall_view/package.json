@@ -4,7 +4,8 @@
         "node": ">=0.10.20",
         "npm": ">=1.4.10"
     },
-    "devDependencies": {
-        "guanlecoja": "0.3.1"
+    "dependencies": {
+        "guanlecoja": "~0.8.3",
+        "gulp": "3.9.0"
     }
 }

@@ -1,6 +1,6 @@
-.. ==================================
+.. ======================================
    Buildbot Documentation - |version|
-   ==================================
+   ======================================
 
 This is the Buildbot documentation for Buildbot version |version|.
 
@@ -15,25 +15,13 @@ Table Of Contents
 
 .. toctree::
    :maxdepth: 2
+   :numbered: 4
 
    tutorial/index
    manual/index
    developer/index
    relnotes/index
-
-Indices and Tables
-==================
-
-* :ref:`genindex`
-* :bb:index:`cfg`
-* :bb:index:`sched`
-* :bb:index:`chsrc`
-* :bb:index:`step`
-* :bb:index:`status`
-* :bb:index:`cmdline`
-* :bb:index:`msg`
-* :ref:`modindex`
-* :ref:`search`
+   indices
 
 Copyright
 =========

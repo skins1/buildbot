@@ -13,22 +13,25 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.internet import defer
+
 from buildbot import config
 from buildbot import interfaces
 from buildbot import util
+from buildbot.process.results import SUCCESS
+from buildbot.process.results import WARNINGS
 from buildbot.schedulers import base
-from buildbot.status.results import SUCCESS
-from buildbot.status.results import WARNINGS
-from twisted.internet import defer
 
 
 class Dependent(base.BaseScheduler):
 
     compare_attrs = ('upstream_name',)
 
-    def __init__(self, name, upstream, builderNames, properties={}, **kwargs):
-        base.BaseScheduler.__init__(self, name, builderNames, properties,
-                                    **kwargs)
+    def __init__(self, name, upstream, builderNames, **kwargs):
+        base.BaseScheduler.__init__(self, name, builderNames, **kwargs)
         if not interfaces.IScheduler.providedBy(upstream):
             config.error(
                 "upstream must be another Scheduler instance")
@@ -38,7 +41,7 @@ class Dependent(base.BaseScheduler):
         self._cached_upstream_bsids = None
 
         # the subscription lock makes sure that we're done inserting a
-        # subcription into the DB before registering that the buildset is
+        # subscription into the DB before registering that the buildset is
         # complete.
         self._subscription_lock = defer.DeferredLock()
 
@@ -46,9 +49,12 @@ class Dependent(base.BaseScheduler):
     def activate(self):
         yield base.BaseScheduler.deactivate(self)
 
-        self._buildset_new_consumer = yield self.master.data.startConsuming(
+        if not self.enabled:
+            return
+
+        self._buildset_new_consumer = yield self.master.mq.startConsuming(
             self._buildset_new_cb,
-            {}, ('buildsets',))
+            ('buildsets', None, 'new'))
         # TODO: refactor to subscribe only to interesting buildsets, and
         # subscribe to them directly, via the data API
         self._buildset_complete_consumer = yield self.master.mq.startConsuming(
@@ -63,6 +69,9 @@ class Dependent(base.BaseScheduler):
         # the base deactivate will unsubscribe from new changes
         yield base.BaseScheduler.deactivate(self)
 
+        if not self.enabled:
+            return
+
         if self._buildset_new_consumer:
             self._buildset_new_consumer.stopConsuming()
         if self._buildset_complete_consumer:
@@ -71,7 +80,7 @@ class Dependent(base.BaseScheduler):
 
     @util.deferredLocked('_subscription_lock')
     def _buildset_new_cb(self, key, msg):
-        # check if this was submitetted by our upstream
+        # check if this was submitted by our upstream
         if msg['scheduler'] != self.upstream_name:
             return
 
@@ -116,7 +125,7 @@ class Dependent(base.BaseScheduler):
 
     @defer.inlineCallbacks
     def _getUpstreamBuildsets(self):
-        # get a list of (bsid, sssid, complete, results) for all
+        # get a list of (bsid, ssids, complete, results) for all
         # upstream buildsets
         yield self._updateCachedUpstreamBuilds()
 

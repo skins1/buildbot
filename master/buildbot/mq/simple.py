@@ -13,27 +13,31 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import pprint
 
-from buildbot import config
-from buildbot.mq import base
-from buildbot.util import tuplematch
 from twisted.internet import defer
 from twisted.python import log
 
+from buildbot.mq import base
+from buildbot.util import service
+from buildbot.util import tuplematch
 
-class SimpleMQ(config.ReconfigurableServiceMixin, base.MQBase):
 
-    def __init__(self, master):
-        base.MQBase.__init__(self, master)
+class SimpleMQ(service.ReconfigurableServiceMixin, base.MQBase):
+
+    def __init__(self):
+        base.MQBase.__init__(self)
         self.qrefs = []
         self.persistent_qrefs = {}
         self.debug = False
 
-    def reconfigService(self, new_config):
+    def reconfigServiceWithBuildbotConfig(self, new_config):
         self.debug = new_config.mq.get('debug', False)
-        return config.ReconfigurableServiceMixin.reconfigService(self,
-                                                                 new_config)
+        return service.ReconfigurableServiceMixin.reconfigServiceWithBuildbotConfig(self,
+                                                                                    new_config)
 
     def produce(self, routingKey, data):
         if self.debug:
@@ -43,6 +47,8 @@ class SimpleMQ(config.ReconfigurableServiceMixin, base.MQBase):
                 qref.invoke(routingKey, data)
 
     def startConsuming(self, callback, filter, persistent_name=None):
+        if any(not isinstance(k, str) and k is not None for k in filter):
+            raise AssertionError("%s is not a filter" % (filter,))
         if persistent_name:
             if persistent_name in self.persistent_qrefs:
                 qref = self.persistent_qrefs[persistent_name]

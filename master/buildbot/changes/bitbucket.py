@@ -13,8 +13,11 @@
 #
 # Copyright Buildbot Team Members
 
-import time
+from __future__ import absolute_import
+from __future__ import print_function
 
+import json
+import time
 from datetime import datetime
 
 from twisted.internet import defer
@@ -27,14 +30,13 @@ from buildbot.util import ascii2unicode
 from buildbot.util import datetime2epoch
 from buildbot.util import deferredLocked
 from buildbot.util import epoch2datetime
-from buildbot.util import json
 
 
 class BitbucketPullrequestPoller(base.PollingChangeSource):
 
-    compare_attrs = ["owner", "slug", "branch",
+    compare_attrs = ("owner", "slug", "branch",
                      "pollInterval", "useTimestamps",
-                     "category", "project", "pollAtLaunch"]
+                     "category", "project", "pollAtLaunch")
 
     db_class_name = 'BitbucketPullrequestPoller'
 
@@ -64,13 +66,15 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
         self.lastChange = time.time()
         self.lastPoll = time.time()
         self.useTimestamps = useTimestamps
-        self.category = category
+        self.category = category if callable(
+            category) else ascii2unicode(category)
         self.project = ascii2unicode(project)
         self.initLock = defer.DeferredLock()
 
     def describe(self):
         return "BitbucketPullrequestPoller watching the "\
-            "Bitbucket repository %s/%s, branch: %s" % (self.owner, self.slug, self.branch)
+            "Bitbucket repository %s/%s, branch: %s" % (
+                self.owner, self.slug, self.branch)
 
     @deferredLocked('initLock')
     def poll(self):
@@ -83,7 +87,8 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
         self.lastPoll = time.time()
         log.msg("BitbucketPullrequestPoller: polling "
                 "Bitbucket repository %s/%s, branch: %s" % (self.owner, self.slug, self.branch))
-        url = "https://bitbucket.org/api/2.0/repositories/%s/%s/pullrequests" % (self.owner, self.slug)
+        url = "https://bitbucket.org/api/2.0/repositories/%s/%s/pullrequests" % (
+            self.owner, self.slug)
         return client.getPage(url, timeout=self.pollInterval)
 
     @defer.inlineCallbacks
@@ -101,7 +106,8 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
             if not self.branch or branch in self.branch:
                 current = yield self._getCurrentRev(nr)
 
-                if not current or current != revision:
+                # compare _short_ hashes to check if the PR has been updated
+                if not current or current[0:12] != revision[0:12]:
                     # parse pull request api page (required for the filter)
                     page = yield client.getPage(str(pr['links']['self']['href']))
                     pr_json = json.loads(page, encoding=self.encoding)
@@ -114,7 +120,8 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
                     # access additional information
                     author = pr['author']['display_name']
                     prlink = pr['links']['html']['href']
-                    # Get time updated time. Note that the timezone offset is ignored.
+                    # Get time updated time. Note that the timezone offset is
+                    # ignored.
                     if self.useTimestamps:
                         updated = datetime.strptime(
                             pr['updated_on'].split('.')[0],
@@ -140,7 +147,8 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
                         author=ascii2unicode(author),
                         revision=ascii2unicode(revision),
                         revlink=ascii2unicode(revlink),
-                        comments=u'pull-request #%d: %s\n%s' % (nr, title, prlink),
+                        comments=u'pull-request #%d: %s\n%s' % (
+                            nr, title, prlink),
                         when_timestamp=datetime2epoch(updated),
                         branch=self.branch,
                         category=self.category,
@@ -152,31 +160,34 @@ class BitbucketPullrequestPoller(base.PollingChangeSource):
     def _processChangesFailure(self, f):
         log.msg('BitbucketPullrequestPoller: json api poll failed')
         log.err(f)
-        # eat the failure to continue along the defered chain - we still want to catch up
+        # eat the failure to continue along the deferred chain - we still want
+        # to catch up
         return None
 
     def _getCurrentRev(self, pr_id):
-        # Return a deferred datetime object for the given pull request number or None.
+        # Return a deferred datetime object for the given pull request number
+        # or None.
         d = self._getStateObjectId()
 
+        @d.addCallback
         def oid_callback(oid):
+            current = self.master.db.state.getState(
+                oid, 'pull_request%d' % pr_id, None)
+
+            @current.addCallback
             def result_callback(result):
                 return result
-            current = self.master.db.state.getState(oid, 'pull_request%d' % pr_id, None)
-            current.addCallback(result_callback)
             return current
-
-        d.addCallback(oid_callback)
         return d
 
     def _setCurrentRev(self, pr_id, rev):
-        # Set the datetime entry for a specifed pull request.
+        # Set the datetime entry for a specified pull request.
         d = self._getStateObjectId()
 
+        @d.addCallback
         def oid_callback(oid):
             return self.master.db.state.setState(oid, 'pull_request%d' % pr_id, rev)
 
-        d.addCallback(oid_callback)
         return d
 
     def _getStateObjectId(self):

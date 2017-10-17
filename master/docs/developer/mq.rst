@@ -15,7 +15,7 @@ The content of the messages is sufficient to reconstruct the updated state, allo
 
 This split nature immediately brings to light the problem of synchronizing the two interfaces.
 Queueing systems can introduce queueing delays as messages propagate.
-Likewise, database systems may introduce a delay between committed modifications and the modified data appearing in queries; for example, with MySQL master/slave replication, there can be several seconds' delay in a before a slave is updated.
+Likewise, database systems may introduce a delay between committed modifications and the modified data appearing in queries; for example, with MySQL master/slave replication, there can be several seconds' delay before a slave is updated.
 
 Buildbot's MQ connector simply relays messages, and makes no attempt to coordinate the timing of those messages with the corresponding database updates.
 It is up to higher layers to apply such coordination.
@@ -81,6 +81,23 @@ For a filter to match a routing key, it must have the same length, and each elem
         If ``persistent_name`` is given, then the consumer is assumed to be persistent, and consumption can be resumed with the given name.
         Messages that arrive when no consumer is active are queued and will be delivered when a consumer becomes active.
 
+    .. py:method:: waitUntilEvent(filter, check_callback)
+
+        :param tuple filter: filter for routing keys of interest
+        :param function check_callback: a callback which check if the event has already happened
+        :returns: a Deferred that fires when the event has been received, and contain tuple (routing_key, value) representing the event
+
+        This method is a helper which returns a defer that fire when a certain event has occured.
+        This is useful for waiting the end of a build or disconnection of a worker.
+        You shall make sure when using this method that this event will happen in the future, and take care of race conditions.
+        For that caller must provide a check_callback which will check of the event has already occured.
+        The whole race-condition-free process is:
+
+        * Register to event
+        * Check if it has already happened
+        * If not wait for the event
+        * Unregister from event
+
 .. py:class:: QueueRef
 
     The :py:class:`QueueRef` returned (via Deferred) from :py:meth:`~MQConnector.startConsuming` can be used to stop consuming messages when they are no longer needed.
@@ -105,10 +122,49 @@ Simple
 
 .. py:module:: buildbot.mq.simple
 
-.. py:class:: SimpleConnector
+.. py:class:: SimpleMQ
 
     The :py:class:`SimpleMQ` class implements a local equivalent of a message-queueing server.
     It is intended for Buildbot installations with only one master.
+
+Wamp
+....
+
+.. py:module:: buildbot.mq.wamp
+
+.. py:class:: WampMQ
+
+    The :py:class:`WampMQ` class implements message-queueing using a wamp router.
+    This class translates the semantics of the buildbot mq api to the semantics of the wamp messaging system.
+    The message route is translated to a wamp topic by joining with dot and prefixing with buildbot namespace.
+    Example message that is sent via wamp is:
+
+    .. code-block:: python
+
+        topic = "org.buildbot.mq.builds.1.new"
+        data = {
+            'builderid': 10,
+            'buildid': 1,
+            'buildrequestid': 13,
+            'workerid': 20,
+            'complete': False,
+            'complete_at': None,
+            'masterid': 824,
+            'number': 1,
+            'results': None,
+            'started_at': 1,
+            'state_string': u'created'
+        }
+
+.. py:module:: buildbot.wamp.connector
+
+.. py:class:: WampConnector
+
+    The :py:class:`WampConnector` class implements a buildbot service for wamp.
+    It is managed outside of the mq module as this protocol can also be reused for worker protocol.
+    The connector support queuing of requests until the wamp connection is created, but do not support disconnection and reconnection.
+    Reconnection will be supported as part of a next release of AutobahnPython (https://github.com/crossbario/autobahn-python/issues/295).
+    There is a chicken and egg problem at the buildbot initialization phasis, so the produce messages are actually not sent with deferred.
 
 .. _queue-schema:
 
@@ -156,7 +212,7 @@ Unit tests should be used to ensure this resiliency.
 
 Some related messages are sent at approximately the same time.
 Due to the non-blocking nature of message delivery, consumers should *not* assume that subsequent messages in a sequence remain queued.
-For example, upon receipt of a :bb:msg:`buildset.$bsid.new` message, it is already too late to try to subscribe to the associated build requests messages, as they may already have been consumed.
+For example, upon receipt of a ``buildset.$bsid.new`` message, it is already too late to try to subscribe to the associated build requests messages, as they may already have been consumed.
 
 Schema Changes
 ~~~~~~~~~~~~~~

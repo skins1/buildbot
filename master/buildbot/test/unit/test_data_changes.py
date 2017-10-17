@@ -13,18 +13,23 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
 
+from twisted.internet import defer
+from twisted.internet import task
+from twisted.trial import unittest
+
 from buildbot.data import changes
+from buildbot.data import resultspec
 from buildbot.process.users import users
 from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import endpoint
 from buildbot.test.util import interfaces
 from buildbot.util import epoch2datetime
-from twisted.internet import defer
-from twisted.internet import task
-from twisted.trial import unittest
 
 
 class ChangeEndpoint(endpoint.EndpointMixin, unittest.TestCase):
@@ -83,21 +88,40 @@ class ChangesEndpoint(endpoint.EndpointMixin, unittest.TestCase):
     def tearDown(self):
         self.tearDownEndpoint()
 
+    @defer.inlineCallbacks
     def test_get(self):
-        d = self.callGet(('changes',))
+        changes = yield self.callGet(('changes',))
 
-        @d.addCallback
-        def check(changes):
-            self.validateData(changes[0])
-            self.assertEqual(changes[0]['changeid'], 13)
-            self.validateData(changes[1])
-            self.assertEqual(changes[1]['changeid'], 14)
-        return d
+        self.validateData(changes[0])
+        self.assertEqual(changes[0]['changeid'], 13)
+        self.validateData(changes[1])
+        self.assertEqual(changes[1]['changeid'], 14)
 
-    def test_startConsuming(self):
-        return self.callStartConsuming({}, {},
-                                       expected_filter=('changes',
-                                                        None, 'new'))
+    @defer.inlineCallbacks
+    def test_getRecentChanges(self):
+        resultSpec = resultspec.ResultSpec(limit=1, order=('-changeid',))
+        changes = yield self.callGet(('changes',), resultSpec=resultSpec)
+
+        self.validateData(changes[0])
+        self.assertEqual(changes[0]['changeid'], 14)
+        self.assertEqual(len(changes), 1)
+
+    @defer.inlineCallbacks
+    def test_getChangesOtherOrder(self):
+        resultSpec = resultspec.ResultSpec(limit=1, order=('-when_time_stamp',))
+        changes = yield self.callGet(('changes',), resultSpec=resultSpec)
+
+        # limit not implemented for other order
+        self.assertEqual(len(changes), 2)
+
+    @defer.inlineCallbacks
+    def test_getChangesOtherOffset(self):
+        resultSpec = resultspec.ResultSpec(
+            limit=1, offset=1, order=('-changeid',))
+        changes = yield self.callGet(('changes',), resultSpec=resultSpec)
+
+        # limit not implemented for other offset
+        self.assertEqual(len(changes), 2)
 
 
 class Change(interfaces.InterfaceTests, unittest.TestCase):
@@ -109,6 +133,7 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
         'comments': u'fix whitespace',
         'changeid': 500,
         'files': [u'master/buildbot/__init__.py'],
+        'parent_changeids': [],
         'project': u'Buildbot',
         'properties': {u'foo': (20, u'Change')},
         'repository': u'git://warner',
@@ -139,13 +164,15 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
             self.rtype.addChange)  # real
         def addChange(self, files=None, comments=None, author=None,
                       revision=None, when_timestamp=None, branch=None, category=None,
-                      revlink=u'', properties={}, repository=u'', codebase=None,
+                      revlink=u'', properties=None, repository=u'', codebase=None,
                       project=u'', src=None):
             pass
 
     def do_test_addChange(self, kwargs,
                           expectedRoutingKey, expectedMessage, expectedRow,
-                          expectedChangeUsers=[]):
+                          expectedChangeUsers=None):
+        if expectedChangeUsers is None:
+            expectedChangeUsers = []
         clock = task.Clock()
         clock.advance(10000000)
         d = self.rtype.addChange(_reactor=clock, **kwargs)
@@ -210,6 +237,7 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
             'comments': u'fix whitespace',
             'changeid': 500,
             'files': [u'master/buildbot/__init__.py'],
+            'parent_changeids': [],
             'project': u'Buildbot',
             'properties': {u'foo': (20, u'Change')},
             'repository': u'git://warner',
@@ -253,7 +281,10 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
         return d
 
     def test_addChange_src_codebaseGenerator(self):
+        def preChangeGenerator(**kwargs):
+            return kwargs
         self.master.config = mock.Mock(name='master.config')
+        self.master.config.preChangeGenerator = preChangeGenerator
         self.master.config.codebaseGenerator = \
             lambda change: 'cb-%s' % change['category']
         kwargs = dict(author=u'warner', branch=u'warnerdb',
@@ -272,6 +303,7 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
             'comments': u'fix whitespace',
             'changeid': 500,
             'files': [u'master/buildbot/__init__.py'],
+            'parent_changeids': [],
             'project': u'Buildbot',
             'properties': {u'foo': (20, u'Change')},
             'repository': u'git://warner',
@@ -301,6 +333,64 @@ class Change(interfaces.InterfaceTests, unittest.TestCase):
             category='devel',
             repository='git://warner',
             codebase='cb-devel',
+            project='Buildbot',
+            sourcestampid=100,
+        )
+        return self.do_test_addChange(kwargs,
+                                      expectedRoutingKey, expectedMessage, expectedRow)
+
+    def test_addChange_repository_revision(self):
+        self.master.config = mock.Mock(name='master.config')
+        self.master.config.revlink = lambda rev, repo: 'foo%sbar%sbaz' % (repo, rev)
+        # revlink is default here
+        kwargs = dict(author=u'warner', branch=u'warnerdb',
+                      category=u'devel', comments=u'fix whitespace',
+                      files=[u'master/buildbot/__init__.py'],
+                      project=u'Buildbot', repository=u'git://warner',
+                      codebase=u'', revision=u'0e92a098b', when_timestamp=256738404,
+                      properties={u'foo': 20})
+        expectedRoutingKey = ('changes', '500', 'new')
+        # When no revlink is passed to addChange, but a repository and revision is
+        # passed, the revlink should be constructed by calling the revlink callable
+        # in the config. We thus expect a revlink of 'foogit://warnerbar0e92a098bbaz'
+        expectedMessage = {
+            'author': u'warner',
+            'branch': u'warnerdb',
+            'category': u'devel',
+            'codebase': u'',
+            'comments': u'fix whitespace',
+            'changeid': 500,
+            'files': [u'master/buildbot/__init__.py'],
+            'parent_changeids': [],
+            'project': u'Buildbot',
+            'properties': {u'foo': (20, u'Change')},
+            'repository': u'git://warner',
+            'revision': u'0e92a098b',
+            'revlink': u'foogit://warnerbar0e92a098bbaz',
+            'when_timestamp': 256738404,
+            'sourcestamp': {
+                'branch': u'warnerdb',
+                'codebase': u'',
+                'patch': None,
+                'project': u'Buildbot',
+                'repository': u'git://warner',
+                'revision': u'0e92a098b',
+                'created_at': epoch2datetime(10000000),
+                'ssid': 100,
+            },
+            # uid
+        }
+        expectedRow = fakedb.Change(
+            changeid=500,
+            author='warner',
+            comments='fix whitespace',
+            branch='warnerdb',
+            revision='0e92a098b',
+            revlink='foogit://warnerbar0e92a098bbaz',
+            when_timestamp=256738404,
+            category='devel',
+            repository='git://warner',
+            codebase='',
             project='Buildbot',
             sourcestampid=100,
         )

@@ -38,6 +38,19 @@ tl;dr is:
   }
 }
 
+/* animation for  */
+.anim-fade {
+    -webkit-transition: .5s linear all;
+    transition:  .5s linear all;
+    opacity: 1;
+    &.ng-hide-remove,
+    &.ng-hide-add,.list.ng-hide {
+      display:block!important;
+    }
+    &.ng-hide {
+        opacity: 0;
+    }
+}
 /* animation for validation tooltips in force forms */
 .anim-popover {
   &.ng-enter,
@@ -60,8 +73,8 @@ tl;dr is:
   }
 }
 
-/* steps details animation */
-.anim-stepdetails {
+/* steps and change details animation */
+.anim-stepdetails, .anim-changedetails {
   &.ng-hide-add,
   &.ng-hide-remove{
     display:block!important;
@@ -79,19 +92,10 @@ tl;dr is:
     -webkit-transform: translateY(-20px);
     }
 }
-
 /* rotate animation for fold-unfold of details */
 .rotate {
       transition: -webkit-transform 100ms;
       transition: transform 100ms;
-  &.rotate-90 {
-      -webkit-transform: rotate(90deg);
-      transform: rotate(90deg);
-  }
-  &.rotate-0{
-      -webkit-transform: rotate(1deg);
-      transform: rotate(1deg);
-  }
 }
 
 /* heart-like pulse animation, used to show live stuff like current builds */
@@ -127,7 +131,3 @@ tl;dr is:
     animation-iteration-count: infinite;
     animation-timing-function: linear;
 }
-
-
-
-

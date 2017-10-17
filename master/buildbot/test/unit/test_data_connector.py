@@ -13,7 +13,15 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.builtins import range
+
 import mock
+
+from twisted.internet import defer
+from twisted.python import reflect
+from twisted.trial import unittest
 
 from buildbot.data import base
 from buildbot.data import connector
@@ -22,9 +30,6 @@ from buildbot.data import resultspec
 from buildbot.data import types
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import interfaces
-from twisted.internet import defer
-from twisted.python import reflect
-from twisted.trial import unittest
 
 
 class Tests(interfaces.InterfaceTests):
@@ -43,11 +48,6 @@ class Tests(interfaces.InterfaceTests):
         def getEndpoint(self, path):
             pass
 
-    def test_signature_startConsuming(self):
-        @self.assertArgSpecMatches(self.data.startConsuming)
-        def startConsuming(self, callback, options, path):
-            pass
-
     def test_signature_control(self):
         @self.assertArgSpecMatches(self.data.control)
         def control(self, action, args, path):
@@ -57,7 +57,7 @@ class Tests(interfaces.InterfaceTests):
         @self.assertArgSpecMatches(self.data.updates.addChange)
         def addChange(self, files=None, comments=None, author=None,
                       revision=None, when_timestamp=None, branch=None, category=None,
-                      revlink=u'', properties={}, repository=u'', codebase=None,
+                      revlink=u'', properties=None, repository=u'', codebase=None,
                       project=u'', src=None):
             pass
 
@@ -73,8 +73,8 @@ class Tests(interfaces.InterfaceTests):
 
     def test_signature_updates_addBuildset(self):
         @self.assertArgSpecMatches(self.data.updates.addBuildset)
-        def addBuildset(self, waited_for, scheduler=None, sourcestamps=[],
-                        reason='', properties={}, builderNames=[],
+        def addBuildset(self, waited_for, scheduler=None, sourcestamps=None,
+                        reason='', properties=None, builderids=None,
                         external_idstring=None,
                         parent_buildid=None, parent_relationship=None):
             pass
@@ -103,7 +103,8 @@ class TestDataConnector(unittest.TestCase, Tests):
     def setUp(self):
         self.master = fakemaster.make_master(testcase=self,
                                              wantMq=True)
-        self.data = connector.DataConnector(self.master)
+        self.data = connector.DataConnector()
+        self.data.setServiceParent(self.master)
 
 
 class DataConnector(unittest.TestCase):
@@ -112,7 +113,8 @@ class DataConnector(unittest.TestCase):
         self.master = fakemaster.make_master()
         # don't load by default
         self.patch(connector.DataConnector, 'submodules', [])
-        self.data = connector.DataConnector(self.master)
+        self.data = connector.DataConnector()
+        self.data.setServiceParent(self.master)
 
     def patchFooPattern(self):
         cls = type('FooEndpoint', (base.Endpoint,), {})
@@ -210,20 +212,9 @@ class DataConnector(unittest.TestCase):
             ep.get.assert_called_once_with(mock.ANY, {})
         return d
 
-    @defer.inlineCallbacks
-    def test_startConsuming(self):
-        ep = self.patchFooPattern()
-        ep.startConsuming = mock.Mock(name='MyEndpoint.startConsuming')
-        ep.startConsuming.return_value = defer.succeed('qref')
-
-        # since startConsuming is a mock, there's no need for real mq stuff
-        qref = yield self.data.startConsuming('cb', {}, ('foo', '10', 'bar'))
-        self.assertEqual(qref, 'qref')
-        ep.startConsuming.assert_called_with('cb', {}, dict(fooid=10))
-
     def test_control(self):
         ep = self.patchFooPattern()
-        ep.control = mock.Mock(name='MyEndpoint.startConsuming')
+        ep.control = mock.Mock(name='MyEndpoint.control')
         ep.control.return_value = defer.succeed('controlled')
 
         d = self.data.control('foo!', {'arg': 2}, ('foo', '10', 'bar'))

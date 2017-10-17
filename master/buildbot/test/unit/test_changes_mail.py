@@ -13,14 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
-from __future__ import with_statement
+from __future__ import absolute_import
+from __future__ import print_function
 
 import os
+
+from twisted.trial import unittest
 
 from buildbot.changes import mail
 from buildbot.test.util import changesource
 from buildbot.test.util import dirs
-from twisted.trial import unittest
 
 
 class TestMaildirSource(changesource.ChangeSourceMixin, dirs.DirsMixin,
@@ -47,8 +49,10 @@ class TestMaildirSource(changesource.ChangeSourceMixin, dirs.DirsMixin,
             f.write(fake_message)
 
     def assertMailProcessed(self):
-        self.assertFalse(os.path.exists(os.path.join(self.maildir, "new", "newmsg")))
-        self.assertTrue(os.path.exists(os.path.join(self.maildir, "cur", "newmsg")))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.maildir, "new", "newmsg")))
+        self.assertTrue(
+            os.path.exists(os.path.join(self.maildir, "cur", "newmsg")))
 
     def tearDown(self):
         d = self.tearDownDirs()

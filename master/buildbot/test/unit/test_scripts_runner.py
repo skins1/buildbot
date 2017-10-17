@@ -13,21 +13,24 @@
 #
 # Copyright Buildbot Team Members
 
-from __future__ import with_statement
+from __future__ import absolute_import
+from __future__ import print_function
 
-import cStringIO
 import getpass
-import mock
 import os
 import sys
+
+import mock
+
+from twisted.python import log
+from twisted.python import runtime
+from twisted.python import usage
+from twisted.python.compat import NativeStringIO
+from twisted.trial import unittest
 
 from buildbot.scripts import base
 from buildbot.scripts import runner
 from buildbot.test.util import misc
-from twisted.python import log
-from twisted.python import runtime
-from twisted.python import usage
-from twisted.trial import unittest
 
 
 class OptionsMixin(object):
@@ -197,9 +200,9 @@ class TestCreateMasterOptions(OptionsMixin, unittest.TestCase):
         self.assertOptions(opts, exp)
 
     def test_db_invalid(self):
-        self.assertRaisesRegexp(usage.UsageError,
-                                "could not parse database URL 'inv_db_url'",
-                                self.parse, "--db=inv_db_url")
+        self.assertRaisesRegex(usage.UsageError,
+                               "could not parse database URL 'inv_db_url'",
+                               self.parse, "--db=inv_db_url")
 
     def test_db_basedir(self):
         path = r'c:\foo\bar' if runtime.platformType == "win32" else '/foo/bar'
@@ -433,7 +436,7 @@ class TestTryOptions(OptionsMixin, unittest.TestCase):
 
     def test_pb_withInvalidMaster(self):
         """
-        When 'buildbot try' is asked to conncect via pb, but an invalid
+        When 'buildbot try' is asked to connect via pb, but an invalid
         master is specified, a usage error is raised.
         """
         self.assertRaises(usage.UsageError, self.parse,
@@ -478,7 +481,7 @@ class TestSendChangeOptions(OptionsMixin, unittest.TestCase):
 
     def test_properties_with_colon(self):
         opts = self.parse('--property', 'x:http://foo', *self.master_and_who)
-        self.assertEquals(opts['properties'], dict(x='http://foo'))
+        self.assertEqual(opts['properties'], dict(x='http://foo'))
 
     def test_config_file(self):
         self.options_file['master'] = 'MMM:123'
@@ -595,7 +598,7 @@ class TestCheckConfigOptions(OptionsMixin, unittest.TestCase):
 
     def test_defaults(self):
         opts = self.parse()
-        exp = dict(quiet=False, configFile='master.cfg')
+        exp = dict(quiet=False)
         self.assertOptions(opts, exp)
 
     def test_configfile(self):
@@ -605,7 +608,7 @@ class TestCheckConfigOptions(OptionsMixin, unittest.TestCase):
 
     def test_quiet(self):
         opts = self.parse('-q')
-        exp = dict(quiet=True, configFile='master.cfg')
+        exp = dict(quiet=True)
         self.assertOptions(opts, exp)
 
 
@@ -795,7 +798,7 @@ class TestOptions(OptionsMixin, misc.StdoutAssertionsMixin, unittest.TestCase):
     def test_version(self):
         try:
             self.parse('--version')
-        except SystemExit, e:
+        except SystemExit as e:
             self.assertEqual(e.args[0], 0)
         self.assertInStdout('Buildbot version:')
 
@@ -831,18 +834,18 @@ class TestRun(unittest.TestCase):
         self.patch(sys, 'argv', ['buildbot', 'my'])
         try:
             runner.run()
-        except SystemExit, e:
+        except SystemExit as e:
             self.assertEqual(e.args[0], 3)
         else:
             self.fail("didn't exit")
 
     def test_run_bad(self):
         self.patch(sys, 'argv', ['buildbot', 'my', '-l'])
-        stdout = cStringIO.StringIO()
+        stdout = NativeStringIO()
         self.patch(sys, 'stdout', stdout)
         try:
             runner.run()
-        except SystemExit, e:
+        except SystemExit as e:
             self.assertEqual(e.args[0], 1)
         else:
             self.fail("didn't exit")

@@ -3,10 +3,10 @@
 #   This module contains all configuration for the build process
 #
 ### ###############################################################################################
-ANGULAR_TAG = "~1.2.17"
+ANGULAR_TAG = "~1.5.3"
 gulp = require("gulp")
-shell = require("gulp-shell")
 path = require("path")
+shell = require("gulp-shell")
 
 
 # d3 is loaded on demand, so it is just copied in the static dir
@@ -30,14 +30,11 @@ config =
         # JavaScript libraries (order matters)
         deps:
             "guanlecoja-ui":
-                version: '~1.2.0'
+                version: '~1.7.1'
                 files: ['vendors.js', 'scripts.js']
             moment:
                 version: "~2.6.0"
                 files: 'moment.js'
-            restangular:
-                version: "~1.4.0"
-                files: 'dist/restangular.js'
             d3:  # d3 is loaded on demand via d3Service
                 version: "~3.4.11"
                 files: []
@@ -47,16 +44,59 @@ config =
             "bootstrap":
                 version: "~3.1.1"
                 files: []
+            'buildbot-data':
+                version: '~2.2.0'
+                files: 'dist/buildbot-data.js'
+
         testdeps:
             "angular-mocks":
                 version: ANGULAR_TAG
                 files: "angular-mocks.js"
 
     buildtasks: ['scripts', 'styles', 'fonts', 'imgs',
-        'index', 'tests', 'generatedfixtures', 'fixtures', 'copyd3']
+        'index', 'tests', 'fixtures', 'copyd3']
 
-    generatedfixtures: ->
-        gulp.src ""
-            .pipe shell("buildbot dataspec -g window.dataspec -o " + path.join(config.dir.build,"generatedfixtures.js"))
+gulp.task 'processindex', ['index'], ->
+    indexpath = path.join(config.dir.build, 'index.html')
+    gulp.src ""
+        .pipe shell("buildbot processwwwindex -i \"#{indexpath}\"")
+
+gulp.task 'proxy', ['processindex'], ->
+    # this is a task for developing, it proxy api request to http://nine.buildbot.net
+    argv = require('minimist')(process.argv)
+    argv.host?= 'nine.buildbot.net'
+    argv.port?= 8080
+
+    fs = require 'fs'
+    path = require 'path'
+    http = require 'http'
+    httpProxy = require 'http-proxy'
+    proxy = httpProxy.createProxyServer({})
+    proxy.on 'proxyReq', (proxyReq, req, res, options) ->
+        delete proxyReq.removeHeader('Origin')
+        delete proxyReq.removeHeader('Referer')
+    proxy.on 'proxyRes', (proxyRes, req, res) ->
+        proxyRes.headers['Access-Control-Allow-Origin'] = '*'
+        console.log "[Proxy] #{req.method} #{req.url}"
+
+    server = http.createServer (req, res) ->
+        if req.url.match /^\/(api|sse|avatar)/
+            proxy.web req, res, {target: 'http://' + argv.host}
+        else
+            filepath = config.dir.build + req.url.split('?')[0]
+            if fs.existsSync(filepath) and fs.lstatSync(filepath).isDirectory()
+                filepath = path.join(filepath, 'index.html')
+            fs.readFile filepath, (err, data) ->
+                if err
+                    res.writeHead(404)
+                    res.end(JSON.stringify(err))
+                else
+                    res.writeHead(200)
+                    res.end(data)
+    server.on 'upgrade',  (req, socket, head) ->
+        proxy.ws req, socket, {target: 'ws://' + argv.host}
+
+    server.listen parseInt(argv.port)
+    console.log "[Proxy] server listening on port #{argv.port}"
 
 module.exports = config

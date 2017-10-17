@@ -13,22 +13,30 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot.data import base
-from buildbot.data import types
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 
+from buildbot.data import base
+from buildbot.data import types
 
-class BuilderEndpoint(base.Endpoint):
+
+class BuilderEndpoint(base.BuildNestingMixin, base.Endpoint):
 
     isCollection = False
     pathPatterns = """
         /builders/n:builderid
+        /builders/i:buildername
         /masters/n:masterid/builders/n:builderid
     """
 
     @defer.inlineCallbacks
     def get(self, resultSpec, kwargs):
-        builderid = kwargs['builderid']
+        builderid = yield self.getBuilderId(kwargs)
+        if builderid is None:
+            defer.returnValue(None)
+
         bdict = yield self.master.db.builders.getBuilder(builderid)
         if not bdict:
             defer.returnValue(None)
@@ -39,7 +47,10 @@ class BuilderEndpoint(base.Endpoint):
                 return
         defer.returnValue(
             dict(builderid=builderid,
-                 name=bdict['name']))
+                 name=bdict['name'],
+                 masterids=bdict['masterids'],
+                 description=bdict['description'],
+                 tags=bdict['tags']))
 
 
 class BuildersEndpoint(base.Endpoint):
@@ -57,12 +68,11 @@ class BuildersEndpoint(base.Endpoint):
             masterid=kwargs.get('masterid', None))
         defer.returnValue([
             dict(builderid=bd['id'],
-                 name=bd['name'])
+                 name=bd['name'],
+                 masterids=bd['masterids'],
+                 description=bd['description'],
+                 tags=bd['tags'])
             for bd in bdicts])
-
-    def startConsuming(self, callback, options, kwargs):
-        return self.master.mq.startConsuming(callback,
-                                             ('builders', None, None))
 
 
 class Builder(base.ResourceType):
@@ -71,18 +81,36 @@ class Builder(base.ResourceType):
     plural = "builders"
     endpoints = [BuilderEndpoint, BuildersEndpoint]
     keyFields = ['builderid']
+    eventPathPatterns = """
+        /builders/:builderid
+    """
 
     class EntityType(types.Entity):
         builderid = types.Integer()
-        name = types.Identifier(20)
+        name = types.Identifier(50)
+        masterids = types.List(of=types.Integer())
+        description = types.NoneOk(types.String())
+        tags = types.List(of=types.String())
     entityType = EntityType(name)
 
     def __init__(self, master):
         base.ResourceType.__init__(self, master)
 
+    @defer.inlineCallbacks
+    def generateEvent(self, _id, event):
+        builder = yield self.master.data.get(('builders', str(_id)))
+        self.produceEvent(builder, event)
+
     @base.updateMethod
     def findBuilderId(self, name):
         return self.master.db.builders.findBuilderId(name)
+
+    @base.updateMethod
+    @defer.inlineCallbacks
+    def updateBuilderInfo(self, builderid, description, tags):
+        ret = yield self.master.db.builders.updateBuilderInfo(builderid, description, tags)
+        yield self.generateEvent(builderid, "update")
+        defer.returnValue(ret)
 
     @base.updateMethod
     @defer.inlineCallbacks

@@ -13,8 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import text_type
+
 import hashlib
+import itertools
+
 import sqlalchemy as sa
+
+from buildbot.util import unicode2bytes
 
 
 class DBConnectorComponent(object):
@@ -29,7 +37,6 @@ class DBConnectorComponent(object):
 
     def __init__(self, connector):
         self.db = connector
-        self.master = connector.master
 
         # set up caches
         for method in dir(self.__class__):
@@ -37,15 +44,14 @@ class DBConnectorComponent(object):
             if isinstance(o, CachedMethod):
                 setattr(self, method, o.get_cached_method(self))
 
+    @property
+    def master(self):
+        return self.db.master
+
     _isCheckLengthNecessary = None
 
     def checkLength(self, col, value):
-        # for use by subclasses to check that 'value' will fit in 'col', where
-        # 'col' is a table column from the model.
 
-        # ignore this check for database engines that either provide this error
-        # themselves (postgres) or that do not enforce maximum-length
-        # restrictions (sqlite)
         if not self._isCheckLengthNecessary:
             if self.db.pool.engine.dialect.name == 'mysql':
                 self._isCheckLengthNecessary = True
@@ -60,10 +66,14 @@ class DBConnectorComponent(object):
                 "value for column %s is greater than max of %d characters: %s"
                 % (col, col.type.length, value))
 
+    def ensureLength(self, col, value):
+        assert col.type.length, "column %s does not have a length" % (col,)
+        if value and len(value) > col.type.length:
+            value = value[:col.type.length // 2] + hashlib.sha1(unicode2bytes(value)).hexdigest()[:col.type.length // 2]
+        return value
+
     def findSomethingId(self, tbl, whereclause, insert_values,
-                        _race_hook=None):
-        """Find (using C{whereclause}) or add (using C{insert_values) a row to
-        C{table}, and return the resulting ID."""
+                        _race_hook=None, autoCreate=True):
         def thd(conn, no_recurse=False):
             # try to find the master
             q = sa.select([tbl.c.id],
@@ -75,6 +85,9 @@ class DBConnectorComponent(object):
             # found it!
             if row:
                 return row.id
+
+            if not autoCreate:
+                return None
 
             _race_hook and _race_hook(conn)
 
@@ -90,21 +103,22 @@ class DBConnectorComponent(object):
         return self.db.pool.do(thd)
 
     def hashColumns(self, *args):
-        """
-        Hash the given values in a consistent manner: None is represented as
-        \xf5, an invalid unicode byte; strings are converted to utf8; and
-        integers are represented by their decimal expansion.  The values are
-        then joined by '\0' and hashed with sha1.
-        """
         def encode(x):
-            try:
-                return x.encode('utf8')
-            except AttributeError:
-                if x is None:
-                    return '\xf5'
-                return str(x)
+            if x is None:
+                return b'\xf5'
+            elif isinstance(x, text_type):
+                return x.encode('utf-8')
+            return str(x).encode('utf-8')
 
-        return hashlib.sha1('\0'.join(map(encode, args))).hexdigest()
+        return hashlib.sha1(b'\0'.join(map(encode, args))).hexdigest()
+
+    def doBatch(self, batch, batch_n=500):
+        iterator = iter(batch)
+        while True:
+            batch = list(itertools.islice(iterator, batch_n))
+            if not batch:
+                break
+            yield batch
 
 
 class CachedMethod(object):

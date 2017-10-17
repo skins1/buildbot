@@ -13,26 +13,33 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot.util.poll import method as poll_method
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.internet import task
 from twisted.trial import unittest
 
+from buildbot.util import poll
+
 
 class TestPollerSync(unittest.TestCase):
 
-    @poll_method
+    @poll.method
     def poll(self):
         self.calls += 1
         if self.fail:
             raise RuntimeError('oh noes')
 
     def setUp(self):
+        poll.track_poll_methods()
         self.calls = 0
         self.fail = False
         self.poll._reactor = self.clock = task.Clock()
 
     def tearDown(self):
+        poll.reset_poll_methods()
         self.assertEqual(self.clock.getDelayedCalls(), [])
 
     def test_not_started(self):
@@ -107,7 +114,7 @@ class TestPollerSync(unittest.TestCase):
 
 class TestPollerAsync(unittest.TestCase):
 
-    @poll_method
+    @poll.method
     def poll(self):
         assert not self.running, "overlapping call"
         self.running = True
@@ -126,11 +133,15 @@ class TestPollerAsync(unittest.TestCase):
         return d
 
     def setUp(self):
+        poll.track_poll_methods()
         self.calls = 0
         self.running = False
         self.duration = 1
         self.fail = False
         self.poll._reactor = self.clock = task.Clock()
+
+    def tearDown(self):
+        poll.reset_poll_methods()
 
     def test_run_now(self):
         """If NOW is true, the poll begins immediately"""

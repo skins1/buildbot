@@ -13,11 +13,15 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import sqlalchemy as sa
+
+from twisted.internet import reactor
 
 from buildbot.db import base
 from buildbot.util import epoch2datetime
-from twisted.internet import reactor
 
 
 class MasterDict(dict):
@@ -48,15 +52,18 @@ class MastersConnectorComponent(base.DBConnectorComponent):
             r = conn.execute(sa.select([tbl.c.active],
                                        whereclause=whereclause))
             rows = r.fetchall()
+            r.close()
             if not rows:
                 return False  # can't change a row that doesn't exist..
             was_active = bool(rows[0].active)
 
-            # if we're marking inactive, then delete any links to this master
-            sch_mst_tbl = self.db.model.scheduler_masters
-            q = sch_mst_tbl.delete(
-                whereclause=(sch_mst_tbl.c.masterid == masterid))
-            conn.execute(q)
+            if not active:
+                # if we're marking inactive, then delete any links to this
+                # master
+                sch_mst_tbl = self.db.model.scheduler_masters
+                q = sch_mst_tbl.delete(
+                    whereclause=(sch_mst_tbl.c.masterid == masterid))
+                conn.execute(q)
 
             # set the state (unconditionally, just to be safe)
             q = tbl.update(whereclause=whereclause)
@@ -89,6 +96,13 @@ class MastersConnectorComponent(base.DBConnectorComponent):
             return [
                 self._masterdictFromRow(row)
                 for row in conn.execute(tbl.select()).fetchall()]
+        return self.db.pool.do(thd)
+
+    def setAllMastersActiveLongTimeAgo(self, _reactor=reactor):
+        def thd(conn):
+            tbl = self.db.model.masters
+            q = tbl.update().values(active=1, last_active=0)
+            conn.execute(q)
         return self.db.pool.do(thd)
 
     def _masterdictFromRow(self, row):

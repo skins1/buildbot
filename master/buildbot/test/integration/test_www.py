@@ -13,6 +13,19 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+import json
+
+import mock
+
+from twisted.internet import defer
+from twisted.internet import protocol
+from twisted.internet import reactor
+from twisted.trial import unittest
+from twisted.web import client
+
 from buildbot.data import connector as dataconnector
 from buildbot.db import connector as dbconnector
 from buildbot.mq import connector as mqconnector
@@ -20,14 +33,12 @@ from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import db
 from buildbot.test.util import www
-from buildbot.util import json
-from buildbot.www import auth
+from buildbot.util import bytes2NativeString
+from buildbot.util import unicode2bytes
 from buildbot.www import service as wwwservice
-from twisted.internet import defer
-from twisted.internet import protocol
-from twisted.internet import reactor
-from twisted.trial import unittest
-from twisted.web import client
+from buildbot.www import auth
+from buildbot.www import authz
+
 SOMETIME = 1348971992
 OTHERTIME = 1008971992
 
@@ -45,7 +56,7 @@ class BodyReader(protocol.Protocol):
 
     def connectionLost(self, reason):
         if reason.check(client.ResponseDone):
-            self.finishedDeferred.callback(''.join(self.body))
+            self.finishedDeferred.callback(b''.join(self.body))
         else:
             self.finishedDeferred.errback(reason)
 
@@ -57,37 +68,46 @@ class Www(db.RealDatabaseMixin, www.RequiresWwwMixin, unittest.TestCase):
     @defer.inlineCallbacks
     def setUp(self):
         # set up a full master serving HTTP
-        yield self.setUpRealDatabase(table_names=['masters'],
+        yield self.setUpRealDatabase(table_names=['masters', 'objects', 'object_state'],
                                      sqlite_memory=False)
 
         master = fakemaster.FakeMaster()
 
         master.config.db = dict(db_url=self.db_url)
-        master.db = dbconnector.DBConnector(master, 'basedir')
+        master.db = dbconnector.DBConnector('basedir')
+        master.db.setServiceParent(master)
         yield master.db.setup(check_version=False)
 
         master.config.mq = dict(type='simple')
-        master.mq = mqconnector.MQConnector(master)
+        master.mq = mqconnector.MQConnector()
+        master.mq.setServiceParent(master)
         master.mq.setup()
 
-        master.data = dataconnector.DataConnector(master)
+        master.data = dataconnector.DataConnector()
+        master.data.setServiceParent(master)
 
         master.config.www = dict(
             port='tcp:0:interface=127.0.0.1',
             debug=True,
             auth=auth.NoAuth(),
-            url="not yet known",
-            avatar_methods=[])
-        master.www = wwwservice.WWWService(master)
+            authz=authz.Authz(),
+            avatar_methods=[],
+            logfileName='http.log')
+        master.www = wwwservice.WWWService()
+        master.www.setServiceParent(master)
         yield master.www.startService()
-        yield master.www.reconfigService(master.config)
+        yield master.www.reconfigServiceWithBuildbotConfig(master.config)
+        session = mock.Mock()
+        session.uid = "0"
+        master.www.site.sessionFactory = mock.Mock(return_value=session)
 
         # now that we have a port, construct the real URL and insert it into
         # the config.  The second reconfig isn't really required, but doesn't
         # hurt.
         self.url = 'http://127.0.0.1:%d/' % master.www.getPortnum()
-        master.config.www['url'] = self.url
-        yield master.www.reconfigService(master.config)
+        self.url = unicode2bytes(self.url)
+        master.config.buildbotURL = self.url
+        yield master.www.reconfigServiceWithBuildbotConfig(master.config)
 
         self.master = master
 
@@ -109,7 +129,7 @@ class Www(db.RealDatabaseMixin, www.RequiresWwwMixin, unittest.TestCase):
 
     @defer.inlineCallbacks
     def apiGet(self, url, expect200=True):
-        pg = yield self.agent.request('GET', url)
+        pg = yield self.agent.request(b'GET', url)
 
         # this is kind of obscene, but protocols are like that
         d = defer.Deferred()
@@ -118,14 +138,14 @@ class Www(db.RealDatabaseMixin, www.RequiresWwwMixin, unittest.TestCase):
         body = yield d
 
         # check this *after* reading the body, otherwise Trial will
-        # complain tha the response is half-read
+        # complain that the response is half-read
         if expect200 and pg.code != 200:
             self.fail("did not get 200 response for '%s'" % (url,))
 
-        defer.returnValue(json.loads(body))
+        defer.returnValue(json.loads(bytes2NativeString(body)))
 
     def link(self, suffix):
-        return self.url + 'api/v2/' + suffix
+        return self.url + b'api/v2/' + suffix
 
     # tests
 
@@ -142,7 +162,7 @@ class Www(db.RealDatabaseMixin, www.RequiresWwwMixin, unittest.TestCase):
                           active=1, last_active=OTHERTIME),
         ])
 
-        res = yield self.apiGet(self.link('masters'))
+        res = yield self.apiGet(self.link(b'masters'))
         self.assertEqual(res, {
             'masters': [
                 {'active': False, 'masterid': 7, 'name': 'some:master',
@@ -154,7 +174,7 @@ class Www(db.RealDatabaseMixin, www.RequiresWwwMixin, unittest.TestCase):
                 'total': 2,
             }})
 
-        res = yield self.apiGet(self.link('masters/7'))
+        res = yield self.apiGet(self.link(b'masters/7'))
         self.assertEqual(res, {
             'masters': [
                 {'active': False, 'masterid': 7, 'name': 'some:master',

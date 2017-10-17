@@ -13,48 +13,67 @@
 #
 # Copyright Buildbot Team Members
 
-import cgi
-import mock
+from __future__ import absolute_import
+from __future__ import print_function
+from future.moves.urllib.parse import unquote as urlunquote
+from future.moves.urllib.parse import parse_qs
+from future.utils import integer_types
+from future.utils import iteritems
+
+import json
 import os
 import pkg_resources
-import urllib
+from uuid import uuid1
+
+import mock
+
+from twisted.internet import defer
+from twisted.python.compat import NativeStringIO
+from twisted.web import server
 
 from buildbot.test.fake import fakemaster
-from buildbot.util import json
+from buildbot.util import bytes2NativeString
+from buildbot.util import unicode2bytes
 from buildbot.www import auth
-from cStringIO import StringIO
-from twisted.internet import defer
-from twisted.web import server
-from uuid import uuid1
+from buildbot.www import authz
 
 
 class FakeSession(object):
-    pass
+
+    def __init__(self):
+        self.user_info = {"anonymous": True}
+
+    def updateSession(self, request):
+        pass
 
 
 class FakeRequest(object):
-    written = ''
+    written = b''
     finished = False
     redirected_to = None
     rendered_resource = None
     failure = None
-    method = 'GET'
-    path = '/req.path'
+    method = b'GET'
+    path = b'/req.path'
     responseCode = 200
 
     def __init__(self, path=None):
         self.headers = {}
         self.input_headers = {}
         self.prepath = []
-        x = path.split('?', 1)
+        x = path.split(b'?', 1)
         if len(x) == 1:
             self.path = path
             self.args = {}
         else:
             path, argstring = x
             self.path = path
-            self.args = cgi.parse_qs(argstring, 1)
-        self.postpath = list(map(urllib.unquote, path[1:].split('/')))
+            self.args = parse_qs(argstring, 1)
+        self.uri = self.path
+        self.postpath = []
+        for p in path[1:].split(b'/'):
+            path = urlunquote(bytes2NativeString(p))
+            self.postpath.append(unicode2bytes(path))
 
         self.deferred = defer.Deferred()
 
@@ -75,13 +94,19 @@ class FakeRequest(object):
         else:
             self.deferred.callback(self.written)
 
-    def setResponseCode(self, code):
+    def setResponseCode(self, code, text=None):
+        # twisted > 16 started to assert this
+        assert isinstance(code, integer_types)
         self.responseCode = code
+        self.responseText = text
 
     def setHeader(self, hdr, value):
+        assert isinstance(hdr, bytes)
+        assert isinstance(value, bytes)
         self.headers.setdefault(hdr, []).append(value)
 
     def getHeader(self, key):
+        assert isinstance(key, bytes)
         return self.input_headers.get(key)
 
     def processingFailed(self, f):
@@ -114,34 +139,39 @@ class RequiresWwwMixin(object):
 class WwwTestMixin(RequiresWwwMixin):
     UUID = str(uuid1())
 
-    def make_master(self, **kwargs):
+    def make_master(self, url=None, **kwargs):
         master = fakemaster.make_master(wantData=True, testcase=self)
         self.master = master
         master.www = mock.Mock()  # to handle the resourceNeedsReconfigs call
-        cfg = dict(url='//', port=None, auth=auth.NoAuth())
+        master.www.getUserInfos = lambda _: getattr(
+            self.master.session, "user_info", {"anonymous": True})
+        cfg = dict(port=None, auth=auth.NoAuth(), authz=authz.Authz())
         cfg.update(kwargs)
         master.config.www = cfg
+        if url is not None:
+            master.config.buildbotURL = url
         self.master.session = FakeSession()
-
+        self.master.authz = cfg["authz"]
+        self.master.authz.setMaster(self.master)
         return master
 
-    def make_request(self, path=None, method='GET'):
+    def make_request(self, path=None, method=b'GET'):
         self.request = FakeRequest(path)
         self.request.session = self.master.session
         self.request.method = method
         return self.request
 
-    def render_resource(self, rsrc, path='/', accept=None, method='GET',
+    def render_resource(self, rsrc, path=b'/', accept=None, method=b'GET',
                         origin=None, access_control_request_method=None,
                         extraHeaders=None, request=None):
         if not request:
             request = self.make_request(path, method=method)
             if accept:
-                request.input_headers['accept'] = accept
+                request.input_headers[b'accept'] = accept
             if origin:
-                request.input_headers['origin'] = origin
+                request.input_headers[b'origin'] = origin
             if access_control_request_method:
-                request.input_headers['access-control-request-method'] = \
+                request.input_headers[b'access-control-request-method'] = \
                     access_control_request_method
             if extraHeaders is not None:
                 request.input_headers.update(extraHeaders)
@@ -153,15 +183,18 @@ class WwwTestMixin(RequiresWwwMixin):
             request.finish()
         return request.deferred
 
-    def render_control_resource(self, rsrc, path='/', params={},
-                                requestJson=None, action="notfound", id=None):
+    def render_control_resource(self, rsrc, path=b'/', params=None,
+                                requestJson=None, action="notfound", id=None,
+                                content_type=b'application/json'):
         # pass *either* a request or postpath
+        if params is None:
+            params = {}
         id = id or self.UUID
         request = self.make_request(path)
-        request.method = "POST"
-        request.content = StringIO(requestJson or json.dumps(
+        request.method = b"POST"
+        request.content = NativeStringIO(requestJson or json.dumps(
             {"jsonrpc": "2.0", "method": action, "params": params, "id": id}))
-        request.input_headers = {'content-type': 'application/json'}
+        request.input_headers = {b'content-type': content_type}
         rv = rsrc.render(request)
         if rv != server.NOT_DONE_YET:
             d = defer.succeed(rv)
@@ -170,7 +203,7 @@ class WwwTestMixin(RequiresWwwMixin):
 
         @d.addCallback
         def check(_json):
-            res = json.loads(_json)
+            res = json.loads(bytes2NativeString(_json))
             self.assertIn("jsonrpc", res)
             self.assertEqual(res["jsonrpc"], "2.0")
             if not requestJson:
@@ -180,21 +213,23 @@ class WwwTestMixin(RequiresWwwMixin):
         return d
 
     def assertRequest(self, content=None, contentJson=None, contentType=None,
-                      responseCode=None, contentDisposition=None, headers={}):
+                      responseCode=None, contentDisposition=None, headers=None):
+        if headers is None:
+            headers = {}
         got, exp = {}, {}
         if content is not None:
             got['content'] = self.request.written
             exp['content'] = content
         if contentJson is not None:
-            got['contentJson'] = json.loads(self.request.written)
+            got['contentJson'] = json.loads(bytes2NativeString(self.request.written))
             exp['contentJson'] = contentJson
         if contentType is not None:
-            got['contentType'] = self.request.headers['content-type']
+            got['contentType'] = self.request.headers[b'content-type']
             exp['contentType'] = [contentType]
         if responseCode is not None:
-            got['responseCode'] = self.request.responseCode
-            exp['responseCode'] = responseCode
-        for header, value in headers.iteritems():
+            got['responseCode'] = str(self.request.responseCode)
+            exp['responseCode'] = str(responseCode)
+        for header, value in iteritems(headers):
             got[header] = self.request.headers.get(header)
             exp[header] = value
         self.assertEqual(got, exp)

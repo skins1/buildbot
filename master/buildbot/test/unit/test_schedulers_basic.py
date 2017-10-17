@@ -13,15 +13,19 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
+
+from twisted.internet import defer
+from twisted.internet import task
+from twisted.trial import unittest
 
 from buildbot import config
 from buildbot.schedulers import basic
 from buildbot.test.fake import fakedb
 from buildbot.test.util import scheduler
-from twisted.internet import defer
-from twisted.internet import task
-from twisted.trial import unittest
 
 
 class CommonStuffMixin(object):
@@ -30,7 +34,11 @@ class CommonStuffMixin(object):
         kwargs = dict(name="tsched", treeStableTimer=60,
                       builderNames=['tbuild'])
         kwargs.update(kwargs_override)
-        sched = self.attachScheduler(klass(**kwargs), self.SCHEDULERID)
+
+        self.master.db.insertTestData(
+            [fakedb.Builder(name=builderName) for builderName in kwargs['builderNames']])
+        sched = self.attachScheduler(
+            klass(**kwargs), self.OBJECTID, self.SCHEDULERID)
 
         # add a Clock to help checking timing issues
         self.clock = sched._reactor = task.Clock()
@@ -40,7 +48,7 @@ class CommonStuffMixin(object):
 
         @self.assertArgSpecMatches(sched.addBuildsetForChanges)
         def addBuildsetForChanges(
-                waited_for=False, reason='', external_idstring=None, changeids=[],
+                waited_for=False, reason='', external_idstring=None, changeids=None,
                 builderNames=None, properties=None, **kw):
             self.assertEqual(external_idstring, None)
             self.assertEqual(reason, sched.reason)
@@ -66,7 +74,8 @@ class CommonStuffMixin(object):
 class BaseBasicScheduler(CommonStuffMixin,
                          scheduler.SchedulerMixin, unittest.TestCase):
 
-    SCHEDULERID = 244
+    OBJECTID = 244
+    SCHEDULERID = 4
 
     # a custom subclass since we're testing the base class.  This basically
     # re-implements SingleBranchScheduler, but with more asserts
@@ -123,7 +132,7 @@ class BaseBasicScheduler(CommonStuffMixin,
             def fileIsImportant(self, change):
                 return False
         sched = self.makeScheduler(Subclass, onlyImportant=True)
-        self.failUnlessEqual(
+        self.assertEqual(
             Subclass.fileIsImportant.__get__(sched), sched.fileIsImportant)
 
     def test_activate_treeStableTimer(self):
@@ -150,22 +159,9 @@ class BaseBasicScheduler(CommonStuffMixin,
             self.db.schedulers.assertClassifications(
                 self.SCHEDULERID, {20: True})
             self.assertTrue(sched.timer_started)
-            self.assertEqual(sched.getPendingBuildTimes(), [10])
             self.clock.advance(10)
-            self.assertEqual(sched.getPendingBuildTimes(), [])
         d.addCallback(check)
         d.addCallback(lambda _: sched.deactivate())
-        return d
-
-    def test_activate_calls_preStartConsumingChanges(self):
-        sched = self.makeScheduler(self.Subclass)
-        sched.preStartConsumingChanges = mock.Mock(
-            return_value=defer.succeed(None))
-        d = sched.activate()
-
-        @d.addCallback
-        def check(_):
-            sched.preStartConsumingChanges.assert_called_with()
         return d
 
     def test_gotChange_no_treeStableTimer_unimportant(self):
@@ -255,7 +251,6 @@ class BaseBasicScheduler(CommonStuffMixin,
             self.makeFakeChange(branch='master', number=1, when=2220),
             True)
         self.assertEqual(self.events, [])
-        self.assertEqual(sched.getPendingBuildTimes(), [2229])
         self.db.schedulers.assertClassifications(self.SCHEDULERID, {1: True})
 
         # but another (unimportant) change arrives before then
@@ -266,7 +261,6 @@ class BaseBasicScheduler(CommonStuffMixin,
             self.makeFakeChange(branch='master', number=2, when=2226),
             False)
         self.assertEqual(self.events, [])
-        self.assertEqual(sched.getPendingBuildTimes(), [2235])
         self.db.schedulers.assertClassifications(
             self.SCHEDULERID, {1: True, 2: False})
 
@@ -281,7 +275,6 @@ class BaseBasicScheduler(CommonStuffMixin,
             self.makeFakeChange(branch='master', number=3, when=2232),
             True)
         self.assertEqual(self.events, [])
-        self.assertEqual(sched.getPendingBuildTimes(), [2241])
         self.db.schedulers.assertClassifications(
             self.SCHEDULERID, {1: True, 2: False, 3: True})
 
@@ -291,10 +284,35 @@ class BaseBasicScheduler(CommonStuffMixin,
         # finally, time to start the build!
         self.clock.advance(6)  # to 2241
         self.assertEqual(self.events, ['B[1,2,3]@2241'])
-        self.assertEqual(sched.getPendingBuildTimes(), [])
         self.db.schedulers.assertClassifications(self.SCHEDULERID, {})
 
         yield sched.deactivate()
+
+    @defer.inlineCallbacks
+    def test_enabled_callback(self):
+        sched = self.makeScheduler(self.Subclass)
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
+
+    @defer.inlineCallbacks
+    def test_disabled_activate(self):
+        sched = self.makeScheduler(self.Subclass)
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.activate()
+        self.assertEqual(r, None)
+
+    @defer.inlineCallbacks
+    def test_disabled_deactivate(self):
+        sched = self.makeScheduler(self.Subclass)
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.deactivate()
+        self.assertEqual(r, None)
 
 
 class SingleBranchScheduler(CommonStuffMixin,
@@ -307,8 +325,10 @@ class SingleBranchScheduler(CommonStuffMixin,
                  'b': {'repository': "", 'branch': 'master'}}
 
     def makeFullScheduler(self, **kwargs):
+        self.master.db.insertTestData(
+            [fakedb.Builder(name=builderName) for builderName in kwargs['builderNames']])
         sched = self.attachScheduler(basic.SingleBranchScheduler(**kwargs),
-                                     self.SCHEDULERID,
+                                     self.OBJECTID, self.SCHEDULERID,
                                      overrideBuildsetMethods=True)
 
         # add a Clock to help checking timing issues
@@ -389,49 +409,6 @@ class SingleBranchScheduler(CommonStuffMixin,
         d.addCallback(lambda _: sched.deactivate())
 
     @defer.inlineCallbacks
-    def test_preStartConsumingChanges_empty(self):
-        sched = self.makeFullScheduler(name='test', builderNames=['test'],
-                                       treeStableTimer=None, branch='master',
-                                       codebases=self.codebases,
-                                       createAbsoluteSourceStamps=True)
-
-        yield sched.preStartConsumingChanges()
-        self.assertEqual(sched._lastCodebases, {})
-
-    @defer.inlineCallbacks
-    def test_preStartConsumingChanges_no_createAbsoluteSourceStamps(self):
-        sched = self.makeFullScheduler(name='test', builderNames=['test'],
-                                       treeStableTimer=None, branch='master',
-                                       codebases=self.codebases)
-
-        self.db.insertTestData([
-            fakedb.Object(id=self.OBJECTID, name='test',
-                          class_name='SingleBranchScheduler'),
-            fakedb.ObjectState(objectid=self.OBJECTID, name='lastCodebases',
-                               value_json='{"a": {"branch": "master"}}')])
-
-        yield sched.preStartConsumingChanges()
-        self.assertEqual(sched._lastCodebases, {})
-
-    @defer.inlineCallbacks
-    def test_preStartConsumingChanges_existing(self):
-        sched = self.makeFullScheduler(name='test', builderNames=['test'],
-                                       treeStableTimer=None, branch='master',
-                                       codebases=self.codebases,
-                                       createAbsoluteSourceStamps=True)
-
-        self.db.insertTestData([
-            fakedb.Object(id=self.OBJECTID, name='test',
-                          class_name='SingleBranchScheduler'),
-            fakedb.ObjectState(objectid=self.OBJECTID, name='lastCodebases',
-                               value_json='{"a": {"branch": "master", "repository": "A", '
-                               '"revision": "1234:abc",  "lastChange": 13}}')])
-
-        yield sched.preStartConsumingChanges()
-        self.assertEqual(sched._lastCodebases, {
-            'a': {'branch': 'master', 'lastChange': 13,
-                  'repository': 'A', 'revision': '1234:abc'}})
-
     def test_gotChange_createAbsoluteSourceStamps_saveCodebase(self):
         # check codebase is stored after receiving change.
         sched = self.makeFullScheduler(name='test', builderNames=['test'],
@@ -441,22 +418,18 @@ class SingleBranchScheduler(CommonStuffMixin,
         self.db.insertTestData([
             fakedb.Object(id=self.OBJECTID, name='test', class_name='SingleBranchScheduler')])
 
-        d = sched.activate()
+        yield sched.activate()
 
-        d.addCallback(lambda _:
-                      sched.gotChange(self.mkch(codebase='a', revision='1234:abc', repository='A', number=0), True))
-        d.addCallback(lambda _:
-                      sched.gotChange(self.mkch(codebase='b', revision='2345:bcd', repository='B', number=1), True))
+        yield sched.gotChange(self.mkch(codebase='a', revision='1234:abc', repository='A', number=0), True)
+        yield sched.gotChange(self.mkch(codebase='b', revision='2345:bcd', repository='B', number=1), True)
 
-        def check(_):
-            self.db.state.assertState(self.OBJECTID, lastCodebases={
-                'a': dict(branch='master', repository='A', revision=u'1234:abc', lastChange=0),
-                'b': dict(branch='master', repository='B', revision=u'2345:bcd', lastChange=1)})
-        d.addCallback(check)
+        self.db.state.assertState(self.OBJECTID, lastCodebases={
+            'a': dict(branch='master', repository='A', revision=u'1234:abc', lastChange=0),
+            'b': dict(branch='master', repository='B', revision=u'2345:bcd', lastChange=1)})
 
-        d.addCallback(lambda _: sched.deactivate())
-        return d
+        yield sched.deactivate()
 
+    @defer.inlineCallbacks
     def test_gotChange_createAbsoluteSourceStamps_older_change(self):
         # check codebase is not stored if it's older than the most recent
         sched = self.makeFullScheduler(name='test', builderNames=['test'],
@@ -470,22 +443,16 @@ class SingleBranchScheduler(CommonStuffMixin,
                                value_json='{"a": {"branch": "master", "repository": "A", '
                                '"revision": "5555:def",  "lastChange": 20}}')])
 
-        d = sched.activate()
+        yield sched.activate()
 
-        d.addCallback(lambda _:
-                      # this change is not recorded, since it's older than
-                      # change 20
-                      sched.gotChange(self.mkch(codebase='a', revision='1234:abc',
-                                                repository='A', number=10), True))
+        # this change is not recorded, since it's older than
+        # change 20
+        yield sched.gotChange(self.mkch(codebase='a', revision='1234:abc', repository='A', number=10), True)
 
-        def check(_):
-            self.db.state.assertState(self.OBJECTID,
-                                      lastCodebases={'a': dict(branch='master', repository='A',
-                                                               revision=u'5555:def', lastChange=20)})
-        d.addCallback(check)
+        self.db.state.assertState(self.OBJECTID, lastCodebases={
+            'a': dict(branch='master', repository='A', revision=u'5555:def', lastChange=20)})
 
-        d.addCallback(lambda _: sched.deactivate())
-        return d
+        yield sched.deactivate()
 
     @defer.inlineCallbacks
     def test_getCodebaseDict(self):
@@ -517,7 +484,8 @@ class SingleBranchScheduler(CommonStuffMixin,
 class AnyBranchScheduler(CommonStuffMixin,
                          scheduler.SchedulerMixin, unittest.TestCase):
 
-    SCHEDULERID = 246
+    SCHEDULERID = 6
+    OBJECTID = 246
 
     def setUp(self):
         self.setUpScheduler()
@@ -545,21 +513,15 @@ class AnyBranchScheduler(CommonStuffMixin,
         d.addCallback(lambda _:
                       sched.gotChange(mkch(branch='master', number=13), True))
         d.addCallback(lambda _:
-                      self.assertEqual(sched.getPendingBuildTimes(), [10]))
-        d.addCallback(lambda _:
                       self.clock.advance(1))  # time is now 1
         d.addCallback(lambda _:
                       sched.gotChange(mkch(branch='master', number=14), False))
-        d.addCallback(lambda _:
-                      self.assertEqual(sched.getPendingBuildTimes(), [11]))
         d.addCallback(lambda _:
                       sched.gotChange(mkch(branch='boring', number=15), False))
         d.addCallback(lambda _:
                       self.clock.pump([1] * 4))  # time is now 5
         d.addCallback(lambda _:
                       sched.gotChange(mkch(branch='devel', number=16), True))
-        d.addCallback(lambda _:
-                      self.assertEqual(sorted(sched.getPendingBuildTimes()), [11, 15]))
         d.addCallback(lambda _:
                       self.clock.pump([1] * 10))  # time is now 15
 

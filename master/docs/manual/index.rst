@@ -5,14 +5,17 @@ Buildbot Manual
 
 .. toctree::
    :maxdepth: 2
-   
+
    introduction
-   installation
+   installation/index
    concepts
+   secretsmanagement
    configuration
+   worker-transition
    customization
    new-style-steps
    cmdline
    resources
    optimization
    plugins
+   deploy

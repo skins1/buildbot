@@ -13,13 +13,18 @@
 #
 # Copyright Buildbot Team Members
 
-# this class is known to contain cruft and will be looked at later, so
-# no current implementation utilizes it aside from scripts.runner.
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import string_types
+
+from twisted.internet import defer
+from twisted.python import log
 
 from buildbot import pbutil
 from buildbot.util import service
-from twisted.internet import defer
-from twisted.python import log
+
+# this class is known to contain cruft and will be looked at later, so
+# no current implementation utilizes it aside from scripts.runner.
 
 
 class CommandlineUserManagerPerspective(pbutil.NewCredPerspective):
@@ -52,7 +57,7 @@ class CommandlineUserManagerPerspective(pbutil.NewCredPerspective):
             # list, alternating ident, uid
             formatted_results += "user(s) added:\n"
             for user in results:
-                if isinstance(user, basestring):
+                if isinstance(user, string_types):
                     formatted_results += "identifier: %s\n" % user
                 else:
                     formatted_results += "uid: %d\n\n" % user
@@ -73,7 +78,7 @@ class CommandlineUserManagerPerspective(pbutil.NewCredPerspective):
             formatted_results += "user(s) found:\n"
             for user in results:
                 if user:
-                    for key in user:
+                    for key in sorted(user.keys()):
                         if key != 'bb_password':
                             formatted_results += "%s: %s\n" % (key, user[key])
                     formatted_results += "\n"
@@ -110,6 +115,7 @@ class CommandlineUserManagerPerspective(pbutil.NewCredPerspective):
         log.msg("perspective_commandline called")
         results = []
 
+        # pylint: disable=too-many-nested-blocks
         if ids:
             for user in ids:
                 # get identifier, guaranteed to be in user from checks
@@ -216,8 +222,8 @@ class CommandlineUserManager(service.AsyncMultiService):
     def stopService(self):
         d = defer.maybeDeferred(service.AsyncMultiService.stopService, self)
 
+        @d.addCallback
         def unreg(_):
             if self.registration:
                 return self.registration.unregister()
-        d.addCallback(unreg)
         return d

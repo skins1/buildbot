@@ -15,8 +15,8 @@ Package the source
 To begin with, you must package your changes.
 If you do not know what a Python package is, these two tutorials will get you going:
 
-* `Installation and Packaging Tutorial <https://packaging.python.org/en/latest/tutorial.html#creating-your-own-project>`_
-* `The Hitchhiker’s Guide to Packaging <http://guide.python-distribute.org/index.html>`_
+* `Python Packaging User Guide <https://packaging.python.org/en/latest/>`__
+* `The Hitchhiker’s Guide to Packaging <https://the-hitchhikers-guide-to-packaging.readthedocs.org/en/latest/>`__
 
 The former is more recent and, while it addresses everything that you need to know about Python packages, is still work in progress.
 The latter is a bit dated, though it was the most complete guide for quite some time available for Python developers looking to package their software.
@@ -28,7 +28,7 @@ Making the plugin package
 
 Buildbot supports several kinds of pluggable components:
 
-* ``buildslave``
+* ``worker``
 * ``changes``
 * ``schedulers``
 * ``steps``
@@ -57,9 +57,9 @@ Once you have your component packaged, it's quite straightforward: you just need
     )
 
 (You might have seen different ways to specify the value for ``entry_points``, however they all do the same thing.
-Full description of possible ways is available in `setuptools documentation <http://pythonhosted.org/setuptools/setuptools.html#dynamic-discovery-of-services-and-plugins>`_.)
+Full description of possible ways is available in `setuptools documentation <https://setuptools.readthedocs.io/en/latest/setuptools.html#dynamic-discovery-of-services-and-plugins>`_.)
 
-After the :file:`setup.py` file is updated, you can build and install it:
+After the :src:`setup.py <master/setup.py>` file is updated, you can build and install it:
 
 .. code-block:: none
 

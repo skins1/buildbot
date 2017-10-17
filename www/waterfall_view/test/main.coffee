@@ -1,5 +1,2 @@
-# Mocked module dependencies
-angular.module('common', []).constant 'config', plugins: waterfall_view: {
-    limit: 2
-}
+# Mocked module dependency
 angular.module('ngAnimate', [])

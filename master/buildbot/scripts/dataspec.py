@@ -13,22 +13,26 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
 
+import json
 import os
 import sys
+
+from twisted.internet import defer
 
 from buildbot.data import connector
 from buildbot.test.fake import fakemaster
 from buildbot.util import in_reactor
-from buildbot.util import json
-from twisted.internet import defer
 
 
 @in_reactor
 @defer.inlineCallbacks
 def dataspec(config):
     master = yield fakemaster.make_master()
-    data = connector.DataConnector(master)
+    data = connector.DataConnector()
+    data.setServiceParent(master)
     if config['out'] != '--':
         dirs = os.path.dirname(config['out'])
         if dirs and not os.path.exists(dirs):

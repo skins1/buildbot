@@ -3,59 +3,78 @@ class WaterfallView extends App
     constructor: -> return [
         'ui.router'
         'ngAnimate'
-        'common'
         'guanlecoja.ui'
+        'bbData'
     ]
+
 
 class Waterfall extends Controller
     self = null
-    constructor: (@$scope, $q, @$window, @$modal, @buildbotService, d3Service, @dataService, scaleService, config) ->
-        self = @
+    constructor: (@$scope, $q, $timeout, @$window, @$log,
+                  @$uibModal, dataService, d3Service, @dataProcessorService,
+                  scaleService, @bbSettingsService, glTopbarContextualActionsService) ->
+        self = this
+        actions = [
+            caption: ""
+            icon: "search-plus"
+            action: @zoomPlus
+        ,
+            caption: ""
+            icon: "search-minus"
+            action: @zoomMinus
+        ]
+        glTopbarContextualActionsService.setContextualActions(actions)
 
         # Show the loading spinner
         @loading = true
-
-        # Waterfall configuration
-        cfg = config.plugins.waterfall_view
+        @dataAccessor = dataService.open().closeOnDestroy(@$scope)
+        # Get Waterfall settings
+        @s = @bbSettingsService.getSettingsGroup('Waterfall')
         @c =
             # Margins around the chart
             margin:
-                top: cfg.margin?.top or 15
-                right: cfg.margin?.right or 20
-                bottom: cfg.margin?.bottom or 20
-                left: cfg.margin?.left or 70
+                top: 15
+                right: 20
+                bottom: 20
+                left: 70
 
             # Gap between groups (px)
-            gap: cfg.gap or 30
+            gap: 30
+
+            # Default vertical scaling
+            scaling: @s.scaling_waterfall.value
 
             # Minimum builder column width (px)
-            minColumnWidth: cfg.minColumnWidth or 40
+            minColumnWidth: @s.min_column_width_waterfall.value
 
             # Y axis time format (new line: ^)
-            timeFormat: cfg.timeFormat or '%x^%I:%M'
+            timeFormat: '%x^%H:%M'
 
             # Lazy load limit
-            limit: cfg.limit or 40
+            limit: @s.lazy_limit_waterfall.value
 
             # Idle time threshold in unix time stamp (eg. 300 = 5 min)
-            threshold: cfg.threshold or 300
+            threshold: @s.idle_threshold_waterfall.value
 
             # Grey rectangle below buildids
-            buildidBackground: cfg.buildidBackground or false
+            buildidBackground: @s.number_background_waterfall.value
 
         # Load data (builds and builders)
-        builders = @buildbotService.all('builders').bind(@$scope)
-        builds = @buildbotService.some('builds', {limit: @c.limit, order: '-complete_at'}).bind(@$scope)
+        @all_builders = @dataAccessor.getBuilders(order: 'name')
+        @$scope.builders = @builders = []
+        @buildLimit = @c.limit
+        @$scope.builds = @builds = @dataAccessor.getBuilds({limit: @buildLimit, order: '-complete_at'})
 
-        $q.all([d3Service.get(), builders, builds]).then ([@d3, @builders, @builds]) =>
+        d3Service.get().then (@d3) =>
 
             # Create a scale object
             @scale = new scaleService(@d3)
 
             # Create groups and add builds to builders
-            @groups = @dataService.getGroups(@builders, @builds, @c.threshold)
+            @groups = @dataProcessorService.getGroups(@all_builders, @builds, @c.threshold)
+            @$scope.builders = @builders = @dataProcessorService.filterBuilders(@all_builders)
             # Add builder status to builders
-            @dataService.addStatus(@builders)
+            @dataProcessorService.addStatus(@builders)
 
             # Select containers
             @waterfall = @d3.select('.waterfall')
@@ -76,40 +95,76 @@ class Waterfall extends Controller
                 (n, o) => if n != o then @render()
             , true
             )
-            angular.element(@$window).bind 'resize', => @render()
 
             # Update view on data change
-            @$scope.$watch('builds', ((builds) =>
-                if builds? and @builds.length isnt builds.length
-                    @builds = builds
-                    @groups = @dataService.getGroups(@builders, @builds, @c.threshold)
-                    @dataService.addStatus(@builders)
-                    @render()
-                ), true)
+            @loadingMore = false
+            @builds.onChange = @all_builders.onChange = @renderNewData
+
 
             # Lazy load builds on scroll
             containerParent = @container.node().parentNode
             onScroll = =>
-                if  @getHeight() - containerParent.scrollTop < 1000
-                    # Unbind scroll listener to prevent multiple execution before new data are received
-                    angular.element(containerParent).unbind('scroll')
-                    @loadMore().then (builds) =>
-                        if builds? and @builds.length isnt builds.length
-                            # $scope.$watch renders the new data
-                            # Rebind scroll listener
-                            angular.element(containerParent).bind 'scroll', onScroll
-                        # All builds are rendered, unbind event listener
-                        else angular.element(containerParent).unbind('scroll')
+                if not @loadingMore and @getHeight() - containerParent.scrollTop < 1000
+                    @loadingMore = true
+                    @loadMore()
 
             # Bind scroll event listener
             angular.element(containerParent).bind 'scroll', onScroll
+
+            resizeHandler = => @render()
+            window = angular.element(@$window)
+            window.bind 'resize', resizeHandler
+            keyHandler =  (e) =>
+                # +
+                if e.key is '+'
+                    e.preventDefault()
+                    @zoomPlus()
+                # -
+                if e.key is '-'
+                    e.preventDefault()
+                    @zoomMinus()
+            window.bind 'keypress', keyHandler
+            @$scope.$on '$destroy', ->
+                window.unbind 'keypress', keyHandler
+                window.unbind 'resize', resizeHandler
+
+
+    zoomPlus: =>
+        @incrementScaleFactor()
+        @render()
+
+    zoomMinus: =>
+        @decrementScaleFactor()
+        @render()
+    ###
+    # Increment and decrement the scale factor
+    ###
+    incrementScaleFactor: ->
+        @c.scaling *= 1.5
+        @s.scaling_waterfall.value *= 1.5
+        @bbSettingsService.save()
+
+    decrementScaleFactor: ->
+        @c.scaling /= 1.5
+        @s.scaling_waterfall.value /= 1.5
+        @bbSettingsService.save()
 
     ###
     # Load more builds
     ###
     loadMore: ->
-        @buildbotService.some('builds', {limit: @builds.length + @c.limit, order: '-complete_at'}).bind(@$scope)
-        # $scope.$watch renders the new data
+        if @builds.length < @buildLimit
+            # last query returned less build than expected, so we went to the beginning of time
+            # no need to query again
+            return
+        @buildLimit = @builds.length + @c.limit
+        builds = @dataAccessor.getBuilds({limit: @buildLimit, order: '-complete_at'})
+        builds.onChange = (builds) =>
+            @builds.close()  # force close the old collection's auto-update
+            @builds = builds
+            # renders the new data
+            builds.onChange = @renderNewData
+            builds.onChange()
 
     ###
     # Create svg elements for chart and header, append svg groups
@@ -125,11 +180,12 @@ class Waterfall extends Controller
                 .attr('transform', "translate(#{@c.margin.left}, #{@c.margin.top})")
                 .attr('class', 'chart')
 
+        height = @getHeaderHeight()
+        @waterfall.select(".header").style("height", height)
         @header = @header.append('svg')
             .append('g')
-                .attr('transform', "translate(#{@c.margin.left}, #{@getHeaderHeight()})")
+                .attr('transform', "translate(#{@c.margin.left}, #{height})")
                 .attr('class', 'header')
-
     ###
     # Get the container width
     ###
@@ -164,13 +220,16 @@ class Waterfall extends Controller
     # Set the container height
     ###
     setHeight: ->
-        h = - @c.gap
+        h = -@c.gap
         for group in @groups
             h += (group.max - group.min + @c.gap)
-        height = h + @c.margin.top + @c.margin.bottom
+        height = h * @c.scaling + @c.margin.top + @c.margin.bottom
         if height < parseInt @waterfall.style('height').replace('px', ''), 10
             @loadMore()
         @container.style('height', "#{height}px")
+        height = @getHeaderHeight()
+        @waterfall.select("div.header").style("height", height + "px")
+        @header.attr('transform', "translate(#{@c.margin.left}, #{height})")
 
     ###
     # Returns content width
@@ -184,12 +243,16 @@ class Waterfall extends Controller
     ###
     getInnerHeight: ->
         height = @getHeight()
-        return height- @c.margin.top - @c.margin.bottom
+        return height - @c.margin.top - @c.margin.bottom
 
     ###
     # Returns headers height
     ###
-    getHeaderHeight: -> parseInt @header.style('height').replace('px', ''), 10
+    getHeaderHeight: ->
+        max_buildername = 0
+        for builder in @builders
+            max_buildername = Math.max(builder.name.length, max_buildername)
+        return Math.max(100, max_buildername * 3)
 
     ###
     # Returns the result string of a builder, build or step
@@ -237,13 +300,13 @@ class Waterfall extends Controller
             p = self.d3.select(@parentNode)
             a = p.append('a')
                 .attr('xlink:href', "#/builders/#{builderid}")
-            a.node().appendChild(@)
+            a.node().appendChild(this)
 
         # Rotate text
         xAxisSelect.selectAll('text')
             .style('text-anchor', 'start')
-            .attr('transform', 'translate(0, -5) rotate(-60)')
-            .attr('dy', '.75em')
+            .attr('transform', 'translate(0, -16) rotate(-25)')
+            .attr('dy', '0.75em')
             .each(link)
 
         # Rotate tick lines
@@ -252,8 +315,8 @@ class Waterfall extends Controller
             .attr('transform', 'rotate(90)')
             .attr('x1', 0)
             .attr('x2', 0)
-            .attr('y1', x.rangeBand() / 2)
-            .attr('y2', - x.rangeBand() / 2)
+            .attr('y1', x.rangeBand(1) / 2)
+            .attr('y2', -x.rangeBand(1) / 2)
             .attr('class', self.getResultClassFromThing)
             .classed('stroke', true)
 
@@ -282,8 +345,8 @@ class Waterfall extends Controller
 
         # White background
         axis.append('rect')
-            .attr('x', - @c.margin.left)
-            .attr('y', - @c.margin.top)
+            .attr('x', -@c.margin.left)
+            .attr('y', -@c.margin.top)
             .attr('width', @c.margin.left)
             .attr('height', @getHeight())
             .style('fill', '#fff')
@@ -309,7 +372,7 @@ class Waterfall extends Controller
 
         # Break text on ^ character
         lineBreak = ->
-            e = self.d3.select(@)
+            e = self.d3.select(this)
             words = e.text().split('^')
             e.text('')
 
@@ -349,28 +412,32 @@ class Waterfall extends Controller
             .append('g')
                 .attr('class', 'build')
                 .attr('transform', (build) -> "translate(0, #{y(build.complete_at)})")
-
+        max = (a, b) ->
+            if (a > b)
+                return a
+            return b
         # Draw rectangle for each build
+        height = (build) -> max(10, Math.abs(y(build.started_at) - y(build.complete_at)))
         builds.append('rect')
             .attr('class', self.getResultClassFromThing)
-            .attr('width', x.rangeBand())
-            .attr('height', (build) -> y(build.started_at) - y(build.complete_at))
+            .attr('width', x.rangeBand(1))
+            .attr('height', height)
             .classed('fill', true)
 
         # Optional: grey rectangle below buildids
         if @c.buildidBackground
             builds.append('rect')
                 .attr('y', -15)
-                .attr('width', x.rangeBand())
+                .attr('width', x.rangeBand(1))
                 .attr('height', 15)
                 .style('fill', '#ccc')
 
         # Draw text over builds
         builds.append('text')
             .attr('class', 'id')
-            .attr('x', x.rangeBand() / 2)
+            .attr('x', x.rangeBand(1) / 2)
             .attr('y', -3)
-            .text((build) -> build.buildid)
+            .text((build) -> build.number)
 
         # Add event listeners
         builds
@@ -383,15 +450,15 @@ class Waterfall extends Controller
     # Event actions
     ###
     mouseOver: (build) ->
-        e = self.d3.select(@)
-        mouse = self.d3.mouse(@)
+        e = self.d3.select(this)
+        mouse = self.d3.mouse(this)
         self.addTicks(build)
         self.drawYAxis()
 
         # Move build and builder to front
         p = self.d3.select(@parentNode)
-        @parentNode.appendChild(@)
-        p.each -> @parentNode.appendChild(@)
+        @parentNode.appendChild(this)
+        p.each -> @parentNode.appendChild(this)
 
         # Show tooltip on the left or on the right
         r = build.builderid < self.builders.length / 2
@@ -412,8 +479,7 @@ class Waterfall extends Controller
             .attr('points', points())
 
         # Load steps
-        build.all('steps').bind(self.$scope).then (buildsteps) ->
-
+        build.loadSteps().onChange = (buildsteps) ->
             # Resize the tooltip
             height = buildsteps.length * 15 + 7
             tooltip.transition().duration(100)
@@ -439,15 +505,15 @@ class Waterfall extends Controller
                     .text((step, i) -> "#{i + 1}. #{step.name} #{duration(step)}")
 
     mouseMove: (build) ->
-        e = self.d3.select(@)
+        e = self.d3.select(this)
 
         # Move the tooltip to the mouse position
-        mouse = self.d3.mouse(@)
+        mouse = self.d3.mouse(this)
         e.select('.svg-tooltip')
             .attr('transform', "translate(#{mouse[0]}, #{mouse[1]})")
 
     mouseOut: (build) ->
-        e = self.d3.select(@)
+        e = self.d3.select(this)
         self.removeTicks()
         self.drawYAxis()
 
@@ -456,17 +522,28 @@ class Waterfall extends Controller
 
     click: (build) ->
         # Open modal on click
-        modal = self.$modal.open
+        modal = self.$uibModal.open
             templateUrl: 'waterfall_view/views/modal.html'
             controller: 'waterfallModalController as modal'
             windowClass: 'modal-small'
             resolve:
                 selectedBuild: -> build
 
+    renderNewData: =>
+        @groups = @dataProcessorService.getGroups(@all_builders, @builds, @c.threshold)
+        @$scope.builders = @builders = @dataProcessorService.filterBuilders(@all_builders)
+        @dataProcessorService.addStatus(@builders)
+        @render()
+        @loadingMore = false
+
     ###
     # Render the waterfall view
     ###
     render: ->
+
+        containerParent = @container.node().parentNode
+        y = @scale.getY(@groups, @c.gap, @getInnerHeight())
+        time = y.invert(containerParent.scrollTop)
 
         # Set the content width
         @setWidth()

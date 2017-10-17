@@ -13,22 +13,28 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import datetime
+import json
+
 import mock
+
+from twisted.internet import defer
+from twisted.internet import task
+from twisted.trial import unittest
 
 from buildbot.db import buildsets
 from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import connector_component
+from buildbot.test.util import db
 from buildbot.test.util import interfaces
 from buildbot.test.util import validation
 from buildbot.util import UTC
 from buildbot.util import datetime2epoch
 from buildbot.util import epoch2datetime
-from buildbot.util import json
-from twisted.internet import defer
-from twisted.internet import task
-from twisted.trial import unittest
 
 
 class Tests(interfaces.InterfaceTests):
@@ -41,12 +47,14 @@ class Tests(interfaces.InterfaceTests):
         # set up a sourcestamp with id 234 for use below
         return self.insertTestData([
             fakedb.SourceStamp(id=234),
+            fakedb.Builder(id=1, name='bldr1'),
+            fakedb.Builder(id=2, name='bldr2'),
         ])
 
     def test_signature_addBuildset(self):
         @self.assertArgSpecMatches(self.db.buildsets.addBuildset)
         def addBuildset(self, sourcestamps, reason, properties,
-                        builderNames, waited_for, external_idstring=None, submitted_at=None,
+                        builderids, waited_for, external_idstring=None, submitted_at=None,
                         parent_buildid=None, parent_relationship=None):
             pass
 
@@ -62,7 +70,7 @@ class Tests(interfaces.InterfaceTests):
 
     def test_signature_getBuildsets(self):
         @self.assertArgSpecMatches(self.db.buildsets.getBuildsets)
-        def getBuildsets(self, complete=None):
+        def getBuildsets(self, complete=None, resultSpec=None):
             pass
 
     def test_signature_getRecentBuildsets(self):
@@ -79,7 +87,7 @@ class Tests(interfaces.InterfaceTests):
     @defer.inlineCallbacks
     def test_addBuildset_getBuildset(self):
         bsid, brids = yield self.db.buildsets.addBuildset(sourcestamps=[234],
-                                                          reason='because', properties={}, builderNames=['bldr'],
+                                                          reason='because', properties={}, builderids=[1],
                                                           external_idstring='extid', _reactor=self.clock, waited_for=False)
         # TODO: verify buildrequests too
         bsdict = yield self.db.buildsets.getBuildset(bsid)
@@ -96,7 +104,7 @@ class Tests(interfaces.InterfaceTests):
         d = defer.succeed(None)
         d.addCallback(lambda _:
                       self.db.buildsets.addBuildset(sourcestamps=[234], reason='because',
-                                                    properties={}, builderNames=['bldr'], external_idstring='extid',
+                                                    properties={}, builderids=[1], external_idstring='extid',
                                                     submitted_at=epoch2datetime(8888888), _reactor=self.clock, waited_for=False))
         d.addCallback(lambda bsid_brids:
                       self.db.buildsets.getBuildset(bsid_brids[0]))
@@ -244,9 +252,12 @@ class Tests(interfaces.InterfaceTests):
                       self.db.buildsets.getBuildsets())
 
         def check(bsdictlist):
+            def bsdictKey(bsdict):
+                return bsdict['reason']
+
             for bsdict in bsdictlist:
                 validation.verifyDbDict(self, 'bsdict', bsdict)
-            self.assertEqual(sorted(bsdictlist), sorted([
+            self.assertEqual(sorted(bsdictlist, key=bsdictKey), sorted([
                 dict(external_idstring='extid', reason='rsn1', sourcestamps=[234],
                      submitted_at=datetime.datetime(1978, 6, 15, 12, 31, 15,
                                                     tzinfo=UTC),
@@ -261,7 +272,7 @@ class Tests(interfaces.InterfaceTests):
                                                    tzinfo=UTC),
                      complete=True, results=7, bsid=92,
                      parent_buildid=None, parent_relationship=None),
-            ]))
+            ], key=bsdictKey))
         d.addCallback(check)
         return d
 
@@ -310,14 +321,14 @@ class Tests(interfaces.InterfaceTests):
         d.addCallback(lambda _:
                       self.db.buildsets.completeBuildset(bsid=92, results=6,
                                                          _reactor=self.clock))
-        return self.assertFailure(d, KeyError)
+        return self.assertFailure(d, buildsets.AlreadyCompleteError)
 
     def test_completeBuildset_missing(self):
         d = self.insert_test_getBuildsets_data()
         d.addCallback(lambda _:
                       self.db.buildsets.completeBuildset(bsid=93, results=6,
                                                          _reactor=self.clock))
-        return self.assertFailure(d, KeyError)
+        return self.assertFailure(d, buildsets.AlreadyCompleteError)
 
     def test_completeBuildset(self):
         d = self.insert_test_getBuildsets_data()
@@ -461,7 +472,7 @@ class RealTests(Tests):
         d = defer.succeed(None)
         d.addCallback(lambda _:
                       self.db.buildsets.addBuildset(sourcestamps=[234], reason='because',
-                                                    properties={}, builderNames=['bldr'], external_idstring='extid',
+                                                    properties={}, builderids=[2], external_idstring='extid',
                                                     waited_for=True, _reactor=self.clock))
 
         def check(xxx_todo_changeme):
@@ -482,16 +493,17 @@ class RealTests(Tests):
                 # one buildrequests row
                 r = conn.execute(self.db.model.buildrequests.select())
                 self.assertEqual(r.keys(),
-                                 [u'id', u'buildsetid', u'buildername', u'priority',
+                                 [u'id', u'buildsetid', u'builderid', u'priority',
                                   u'complete', u'results', u'submitted_at',
                                   u'complete_at', u'waited_for'])
                 self.assertEqual(r.fetchall(),
-                                 [(bsid, brids['bldr'], 'bldr', 0, 0,
+                                 [(bsid, brids[2], 2, 0, 0,
                                    -1, self.now, None, 1)])
 
                 # one buildset_sourcestamps row
                 r = conn.execute(self.db.model.buildset_sourcestamps.select())
-                self.assertEqual(r.keys(), [u'id', u'buildsetid', u'sourcestampid'])
+                self.assertEqual(
+                    list(r.keys()), [u'id', u'buildsetid', u'sourcestampid'])
                 self.assertEqual(r.fetchall(), [(1, bsid, 234)])
             return self.db.pool.do(thd)
         d.addCallback(check)
@@ -502,7 +514,7 @@ class RealTests(Tests):
         d = defer.succeed(None)
         d.addCallback(lambda _:
                       self.db.buildsets.addBuildset(sourcestamps=[234], reason='because',
-                                                    waited_for=False, properties=props, builderNames=['a', 'b']))
+                                                    waited_for=False, properties=props, builderids=[1, 2]))
 
         def check(xxx_todo_changeme1):
             (bsid, brids) = xxx_todo_changeme1
@@ -531,15 +543,16 @@ class RealTests(Tests):
                         for row in r.fetchall()]
                 self.assertEqual(rows, [(bsid, 234)])
 
-                # and two buildrequests rows (and don't re-check the default columns)
+                # and two buildrequests rows (and don't re-check the default
+                # columns)
                 r = conn.execute(self.db.model.buildrequests.select())
-                rows = [(row.buildsetid, row.id, row.buildername)
+                rows = [(row.buildsetid, row.id, row.builderid)
                         for row in r.fetchall()]
 
                 # we don't know which of the brids is assigned to which
                 # buildername, but either one will do
                 self.assertEqual(sorted(rows),
-                                 [(bsid, brids['a'], 'a'), (bsid, brids['b'], 'b')])
+                                 [(bsid, brids[1], 1), (bsid, brids[2], 2)])
             return self.db.pool.do(thd)
         d.addCallback(check)
         return d
@@ -557,12 +570,12 @@ class TestFakeDB(unittest.TestCase, Tests):
     def test_addBuildset_bad_waited_for(self):
         # only the fake db asserts on the type of waited_for
         d = self.db.buildsets.addBuildset(sourcestamps=[234], reason='because',
-                                          properties={}, builderNames=['bldr'], external_idstring='extid',
+                                          properties={}, builderids=[1], external_idstring='extid',
                                           waited_for='wat', _reactor=self.clock)
         self.assertFailure(d, AssertionError)
 
 
-class TestRealDB(unittest.TestCase,
+class TestRealDB(db.TestCase,
                  connector_component.ConnectorComponentMixin,
                  RealTests):
 
@@ -570,7 +583,8 @@ class TestRealDB(unittest.TestCase,
         d = self.setUpConnectorComponent(
             table_names=['patches', 'buildsets', 'buildset_properties',
                          'objects', 'buildrequests', 'sourcestamps',
-                         'buildset_sourcestamps'])
+                         'buildset_sourcestamps', 'builders',
+                         'builds', 'masters', 'workers'])
 
         @d.addCallback
         def finish_setup(_):
@@ -598,9 +612,9 @@ class TestRealDB(unittest.TestCase,
         props = dict(prop=(['list'], 'test'))
 
         # Now, call `addBuildset`, and verify that the above properties
-        # were seeed in the `getBuildsetProperties` cache.
+        # were seed in the `getBuildsetProperties` cache.
         bsid, _ = yield self.db.buildsets.addBuildset(
             sourcestamps=[234], reason='because',
-            properties=props, builderNames=['a', 'b'],
+            properties=props, builderids=[1, 2],
             waited_for=False)
         mockedCachePut.assert_called_once_with(bsid, props)

@@ -1,5 +1,5 @@
 class State extends Config
-    constructor: ($stateProvider, glMenuServiceProvider) ->
+    constructor: ($stateProvider, glMenuServiceProvider, bbSettingsServiceProvider) ->
 
         # Name of the state
         name = 'builders'
@@ -21,7 +21,18 @@ class State extends Config
             controller: "#{name}Controller"
             templateUrl: "views/#{name}.html"
             name: name
-            url: '/builders'
+            url: '/builders?tags'
             data: cfg
+            reloadOnSearch: false
 
         $stateProvider.state(state)
+
+        bbSettingsServiceProvider.addSettingsGroup
+            name:'Builders'
+            caption: 'Builders page related settings'
+            items:[
+                type:'bool'
+                name:'show_old_builders'
+                caption:'Show old builders'
+                default_value: false
+            ]

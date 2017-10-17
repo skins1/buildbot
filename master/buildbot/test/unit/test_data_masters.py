@@ -13,17 +13,22 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
 
+from twisted.internet import defer
+from twisted.internet import task
+from twisted.trial import unittest
+
 from buildbot.data import masters
+from buildbot.process.results import RETRY
 from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import endpoint
 from buildbot.test.util import interfaces
 from buildbot.util import epoch2datetime
-from twisted.internet import defer
-from twisted.internet import task
-from twisted.trial import unittest
 
 SOMETIME = 1349016870
 OTHERTIME = 1249016870
@@ -141,35 +146,13 @@ class MastersEndpoint(endpoint.EndpointMixin, unittest.TestCase):
             self.assertEqual(masters, [])
         return d
 
-    def test_startConsuming(self):
-        return self.callStartConsuming({}, {},
-                                       expected_filter=('masters',
-                                                        None, None))
-
 
 class Master(interfaces.InterfaceTests, unittest.TestCase):
 
     def setUp(self):
         self.master = fakemaster.make_master(wantMq=True, wantDb=True,
                                              wantData=True, testcase=self)
-        # mock out the _masterDeactivated methods this will call
-        self.master.data.rtypes.builder = mock.Mock(
-            spec=self.master.data.rtypes.builder)
-        self.master.data.rtypes.builder._masterDeactivated.side_effect = \
-            lambda masterid: defer.succeed(None)
-
-        self.master.data.rtypes.scheduler = mock.Mock(
-            spec=self.master.data.rtypes.scheduler)
-        self.master.data.rtypes.scheduler._masterDeactivated.side_effect = \
-            lambda masterid: defer.succeed(None)
-
-        self.master.data.rtypes.changesource = mock.Mock(
-            spec=self.master.data.rtypes.changesource)
-        self.master.data.rtypes.changesource._masterDeactivated.side_effect = \
-            lambda masterid: defer.succeed(None)
-
         self.rtype = masters.Master(self.master)
-        self.master.doMasterHouseKeeping = mock.Mock()
 
     def test_signature_masterActive(self):
         @self.assertArgSpecMatches(
@@ -235,13 +218,10 @@ class Master(interfaces.InterfaceTests, unittest.TestCase):
                           last_active=clock.seconds()),
         ])
 
+        self.rtype._masterDeactivated = mock.Mock()
         yield self.rtype.masterStopped(name=u'aname', masterid=13)
-        self.assertEqual(self.master.mq.productions, [
-            (('masters', '13', 'stopped'),
-             dict(masterid=13, name='aname', active=False)),
-        ])
-        self.master.doMasterHouseKeeping. \
-            assert_called_with(masterid=13)
+        self.rtype._masterDeactivated. \
+            assert_called_with(13, 'aname')
 
     @defer.inlineCallbacks
     def test_masterStopped_already(self):
@@ -253,16 +233,15 @@ class Master(interfaces.InterfaceTests, unittest.TestCase):
                           last_active=0),
         ])
 
+        self.rtype._masterDeactivated = mock.Mock()
         yield self.rtype.masterStopped(name=u'aname', masterid=13)
-        self.assertEqual(self.master.mq.productions, [])
-        self.master.doMasterHouseKeeping. \
-            assert_not_called()
+        self.rtype._masterDeactivated.assert_not_called()
 
     def test_signature_expireMasters(self):
         @self.assertArgSpecMatches(
             self.master.data.updates.expireMasters,  # fake
             self.rtype.expireMasters)  # real
-        def expireMasters(self):
+        def expireMasters(self, forceHouseKeeping=False):
             pass
 
     @defer.inlineCallbacks
@@ -277,6 +256,8 @@ class Master(interfaces.InterfaceTests, unittest.TestCase):
                           last_active=0),
         ])
 
+        self.rtype._masterDeactivated = mock.Mock()
+
         # check after 10 minutes, and see #14 deactivated; #15 gets deactivated
         # by another master, so it's not included here
         clock.advance(600)
@@ -285,15 +266,61 @@ class Master(interfaces.InterfaceTests, unittest.TestCase):
         master = yield self.master.db.masters.getMaster(14)
         self.assertEqual(master, dict(id=14, name='other',
                                       active=False, last_active=None))
-        self.assertEqual(self.master.mq.productions, [
-            (('masters', '14', 'stopped'),
-             dict(masterid=14, name='other', active=False)),
+        self.rtype._masterDeactivated. \
+            assert_called_with(14, 'other')
+
+    @defer.inlineCallbacks
+    def test_masterDeactivated(self):
+        self.master.db.insertTestData([
+            fakedb.Master(id=14, name='other', active=0,
+                          last_active=0),
+
+            # set up a running build with some steps
+            fakedb.Builder(id=77, name='b1'),
+            fakedb.Worker(id=13, name='wrk'),
+            fakedb.Buildset(id=8822),
+            fakedb.BuildRequest(id=82, builderid=77, buildsetid=8822),
+            fakedb.BuildRequestClaim(brid=82, masterid=14,
+                                     claimed_at=SOMETIME),
+            fakedb.Build(id=13, builderid=77, masterid=14, workerid=13,
+                         buildrequestid=82, number=3, results=None),
+            fakedb.Step(id=200, buildid=13),
+            fakedb.Log(id=2000, stepid=200, num_lines=2),
+            fakedb.LogChunk(logid=2000, first_line=1, last_line=2,
+                            content=u'ab\ncd')
         ])
+
+        # mock out the _masterDeactivated methods this will call
+        for rtype in 'builder', 'scheduler', 'changesource':
+            rtype_obj = getattr(self.master.data.rtypes, rtype)
+            m = mock.Mock(name='%s._masterDeactivated' % rtype,
+                          spec=rtype_obj._masterDeactivated)
+            m.side_effect = lambda masterid: defer.succeed(None)
+            rtype_obj._masterDeactivated = m
+
+        # and the update methods..
+        for meth in 'finishBuild', 'finishStep', 'finishLog':
+            m = mock.create_autospec(getattr(self.master.data.updates, meth))
+            m.side_effect = lambda *args, **kwargs: defer.succeed(None)
+            setattr(self.master.data.updates, meth, m)
+
+        yield self.rtype._masterDeactivated(14, 'other')
+
         self.master.data.rtypes.builder._masterDeactivated. \
             assert_called_with(masterid=14)
         self.master.data.rtypes.scheduler._masterDeactivated. \
             assert_called_with(masterid=14)
         self.master.data.rtypes.changesource._masterDeactivated. \
             assert_called_with(masterid=14)
-        self.master.doMasterHouseKeeping. \
-            assert_called_with(masterid=14)
+
+        # see that we finished off that build and its steps and logs
+        updates = self.master.data.updates
+        updates.finishLog.assert_called_with(logid=2000)
+        updates.finishStep.assert_called_with(
+            stepid=200, results=RETRY, hidden=False)
+        updates.finishBuild.assert_called_with(buildid=13, results=RETRY)
+
+        self.assertEqual(self.master.mq.productions, [
+            (('masters', '14', 'stopped'),
+             dict(masterid=14, name='other', active=False)),
+        ])

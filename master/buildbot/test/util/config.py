@@ -13,6 +13,9 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 from buildbot import config
 
 
@@ -36,7 +39,7 @@ class ConfigErrorsMixin(object):
     def assertRaisesConfigError(self, substr_or_re, fn):
         try:
             fn()
-        except config.ConfigErrors, e:
+        except config.ConfigErrors as e:
             self.assertConfigError(e, substr_or_re)
         else:
             self.fail("ConfigErrors not raised")

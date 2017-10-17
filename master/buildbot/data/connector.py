@@ -13,15 +13,20 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import text_type
+
 import inspect
+
+from twisted.internet import defer
+from twisted.python import reflect
 
 from buildbot.data import base
 from buildbot.data import exceptions
 from buildbot.data import resultspec
 from buildbot.util import pathmatch
 from buildbot.util import service
-from twisted.internet import defer
-from twisted.python import reflect
 
 
 class Updates(object):
@@ -40,7 +45,7 @@ class DataConnector(service.AsyncService):
         'buildbot.data.builders',
         'buildbot.data.builds',
         'buildbot.data.buildrequests',
-        'buildbot.data.buildslaves',
+        'buildbot.data.workers',
         'buildbot.data.steps',
         'buildbot.data.logs',
         'buildbot.data.logchunks',
@@ -54,13 +59,16 @@ class DataConnector(service.AsyncService):
         'buildbot.data.root',
         'buildbot.data.properties',
     ]
+    name = "data"
 
-    def __init__(self, master):
-        self.setName('data')
-        self.master = master
+    def __init__(self):
 
         self.matcher = pathmatch.Matcher()
         self.rootLinks = []  # links from the root of the API
+
+    @defer.inlineCallbacks
+    def setServiceParent(self, parent):
+        yield service.AsyncService.setServiceParent(self, parent)
         self._setup()
 
     def _scanModule(self, mod, _noSetattr=False):
@@ -70,7 +78,7 @@ class DataConnector(service.AsyncService):
                 rtype = obj(self.master)
                 setattr(self.rtypes, rtype.name, rtype)
 
-                # put its update methonds into our 'updates' attribute
+                # put its update methods into our 'updates' attribute
                 for name in dir(rtype):
                     o = getattr(rtype, name)
                     if hasattr(o, 'isUpdateMethod'):
@@ -104,7 +112,8 @@ class DataConnector(service.AsyncService):
         try:
             return self.matcher[path]
         except KeyError:
-            raise exceptions.InvalidPathError
+            raise exceptions.InvalidPathError(
+                "Invalid path: " + "/".join([str(p) for p in path]))
 
     def getResourceType(self, name):
         return getattr(self.rtypes, name)
@@ -120,18 +129,13 @@ class DataConnector(service.AsyncService):
             rv = resultSpec.apply(rv)
         defer.returnValue(rv)
 
-    @defer.inlineCallbacks
-    def startConsuming(self, callback, options, path):
-        endpoint, kwargs = self.getEndpoint(path)
-        ref = yield endpoint.startConsuming(callback, options, kwargs)
-        defer.returnValue(ref)
-
     def control(self, action, args, path):
         endpoint, kwargs = self.getEndpoint(path)
         return endpoint.control(action, args, kwargs)
 
     def produceEvent(self, rtype, msg, event):
-        # warning, this is temporary api, until all code is migrated to data api
+        # warning, this is temporary api, until all code is migrated to data
+        # api
         rsrc = self.getResourceType(rtype)
         return rsrc.produceEvent(msg, event)
 
@@ -141,7 +145,7 @@ class DataConnector(service.AsyncService):
         paths = []
         for k, v in sorted(self.matcher.iterPatterns()):
             paths.append(dict(path=u"/".join(k),
-                              plural=unicode(v.rtype.plural),
-                              type=unicode(v.rtype.entityType.name),
+                              plural=text_type(v.rtype.plural),
+                              type=text_type(v.rtype.entityType.name),
                               type_spec=v.rtype.entityType.getSpec()))
         return paths

@@ -13,11 +13,15 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import util
-from buildbot.util import misc
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.internet import task
 from twisted.trial import unittest
+
+from buildbot import util
+from buildbot.util import misc
 
 
 class deferredLocked(unittest.TestCase):
@@ -26,46 +30,46 @@ class deferredLocked(unittest.TestCase):
         self.assertEqual(util.deferredLocked, misc.deferredLocked)
 
     def test_fn(self):
-        l = defer.DeferredLock()
+        lock = defer.DeferredLock()
 
-        @util.deferredLocked(l)
+        @util.deferredLocked(lock)
         def check_locked(arg1, arg2):
-            self.assertEqual([l.locked, arg1, arg2], [True, 1, 2])
+            self.assertEqual([lock.locked, arg1, arg2], [True, 1, 2])
             return defer.succeed(None)
         d = check_locked(1, 2)
 
+        @d.addCallback
         def check_unlocked(_):
-            self.assertFalse(l.locked)
-        d.addCallback(check_unlocked)
+            self.assertFalse(lock.locked)
         return d
 
     def test_fn_fails(self):
-        l = defer.DeferredLock()
+        lock = defer.DeferredLock()
 
-        @util.deferredLocked(l)
+        @util.deferredLocked(lock)
         def do_fail():
             return defer.fail(RuntimeError("oh noes"))
         d = do_fail()
 
         def check_unlocked(_):
-            self.assertFalse(l.locked)
+            self.assertFalse(lock.locked)
         d.addCallbacks(lambda _: self.fail("didn't errback"),
-                       lambda _: self.assertFalse(l.locked))
+                       lambda _: self.assertFalse(lock.locked))
         return d
 
     def test_fn_exception(self):
-        l = defer.DeferredLock()
+        lock = defer.DeferredLock()
 
-        @util.deferredLocked(l)
+        @util.deferredLocked(lock)
         def do_fail():
             raise RuntimeError("oh noes")
         # using decorators confuses pylint and gives a false positive below
         d = do_fail()           # pylint: disable=assignment-from-no-return
 
         def check_unlocked(_):
-            self.assertFalse(l.locked)
+            self.assertFalse(lock.locked)
         d.addCallbacks(lambda _: self.fail("didn't errback"),
-                       lambda _: self.assertFalse(l.locked))
+                       lambda _: self.assertFalse(lock.locked))
         return d
 
     def test_method(self):
@@ -75,15 +79,16 @@ class deferredLocked(unittest.TestCase):
 
             @util.deferredLocked('aLock')
             def check_locked(self, arg1, arg2):
-                testcase.assertEqual([self.aLock.locked, arg1, arg2], [True, 1, 2])
+                testcase.assertEqual(
+                    [self.aLock.locked, arg1, arg2], [True, 1, 2])
                 return defer.succeed(None)
         obj = C()
         obj.aLock = defer.DeferredLock()
         d = obj.check_locked(1, 2)
 
+        @d.addCallback
         def check_unlocked(_):
             self.assertFalse(obj.aLock.locked)
-        d.addCallback(check_unlocked)
         return d
 
 

@@ -13,10 +13,14 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.trial import unittest
+
 from buildbot.db import changes
 from buildbot.test.fake import fakedb
 from buildbot.test.util import connector_component
-from twisted.trial import unittest
 
 
 class TestBadRows(connector_component.ConnectorComponentMixin,
@@ -31,9 +35,9 @@ class TestBadRows(connector_component.ConnectorComponentMixin,
             table_names=['patches', 'sourcestamps', 'changes',
                          'change_properties', 'change_files'])
 
+        @d.addCallback
         def finish_setup(_):
             self.db.changes = changes.ChangesConnectorComponent(self.db)
-        d.addCallback(finish_setup)
         return d
 
     def tearDown(self):
@@ -47,14 +51,14 @@ class TestBadRows(connector_component.ConnectorComponentMixin,
             fakedb.Change(changeid=13, sourcestampid=10),
         ])
 
+        @d.addCallback
         def get13(_):
             return self.db.changes.getChange(13)
-        d.addCallback(get13)
 
+        @d.addCallback
         def check13(c):
             self.assertEqual(c['properties'],
                              dict(devel=('no source', 'Change')))
-        d.addCallback(check13)
         return d
 
     def test_bogus_row_jsoned_list(self):
@@ -65,12 +69,12 @@ class TestBadRows(connector_component.ConnectorComponentMixin,
             fakedb.Change(changeid=13, sourcestampid=10),
         ])
 
+        @d.addCallback
         def get13(_):
             return self.db.changes.getChange(13)
-        d.addCallback(get13)
 
+        @d.addCallback
         def check13(c):
             self.assertEqual(c['properties'],
                              dict(devel=([1, 2], 'Change')))
-        d.addCallback(check13)
         return d

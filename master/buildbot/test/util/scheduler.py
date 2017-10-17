@@ -13,11 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.builtins import range
+
+from twisted.internet import defer
+
 from buildbot.schedulers import base
 from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import interfaces
-from twisted.internet import defer
 
 
 class SchedulerMixin(interfaces.InterfaceTests):
@@ -41,20 +46,22 @@ class SchedulerMixin(interfaces.InterfaceTests):
     OTHER_MASTER_ID = 93
 
     def setUpScheduler(self):
-        pass
+        self.master = fakemaster.make_master(testcase=self,
+                                             wantDb=True, wantMq=True, wantData=True)
 
     def tearDownScheduler(self):
         pass
 
-    def attachScheduler(self, scheduler, objectid,
-                        overrideBuildsetMethods=False):
+    def attachScheduler(self, scheduler, objectid, schedulerid,
+                        overrideBuildsetMethods=False,
+                        createBuilderDB=False):
         """Set up a scheduler with a fake master and db; sets self.sched, and
         sets the master's basedir to the absolute path of 'basedir' in the test
         directory.
 
         If C{overrideBuildsetMethods} is true, then all of the
-        addBuildsetForXxx methods are overriden to simply append the method
-        name and arguments to self.addBuildsetCalls.  These overriden methods
+        addBuildsetForXxx methods are overridden to simply append the method
+        name and arguments to self.addBuildsetCalls.  These overridden methods
         return buildsets starting with 500 and buildrequest IDs starting with
         100.
 
@@ -67,16 +74,19 @@ class SchedulerMixin(interfaces.InterfaceTests):
         scheduler.objectid = objectid
 
         # set up a fake master
-        self.master = fakemaster.make_master(testcase=self,
-                                             wantDb=True, wantMq=True, wantData=True)
         db = self.db = self.master.db
         self.mq = self.master.mq
-        scheduler.master = self.master
+        scheduler.setServiceParent(self.master)
 
-        db.insertTestData([
-            fakedb.Object(id=objectid, name=scheduler.name,
-                          class_name='SomeScheduler'),
-        ])
+        rows = [fakedb.Object(id=objectid, name=scheduler.name,
+                              class_name='SomeScheduler'),
+                fakedb.Scheduler(id=schedulerid, name=scheduler.name),
+                ]
+        if createBuilderDB is True:
+            rows.extend([fakedb.Builder(name=bname)
+                         for bname in scheduler.builderNames])
+
+        db.insertTestData(rows)
 
         if overrideBuildsetMethods:
             for method in (
@@ -89,8 +99,8 @@ class SchedulerMixin(interfaces.InterfaceTests):
                 self.assertArgSpecMatches(actual, fake)
                 setattr(scheduler, method, fake)
             self.addBuildsetCalls = []
-            self._bsidGenerator = iter(xrange(500, 999))
-            self._bridGenerator = iter(xrange(100, 999))
+            self._bsidGenerator = iter(range(500, 999))
+            self._bridGenerator = iter(range(100, 999))
 
             # temporarily override the sourcestamp and sourcestampset methods
             self.addedSourceStamps = []
@@ -139,12 +149,13 @@ class SchedulerMixin(interfaces.InterfaceTests):
         self.sched = scheduler
         return scheduler
 
+    @defer.inlineCallbacks
     def setSchedulerToMaster(self, otherMaster):
-        self.master.data.updates.schedulerIds[self.sched.name] = self.sched.objectid
+        sched_id = yield self.master.data.updates.findSchedulerId(self.sched.name)
         if otherMaster:
-            self.master.data.updates.schedulerMasters[self.sched.objectid] = otherMaster
+            self.master.data.updates.schedulerMasters[sched_id] = otherMaster
         else:
-            del self.master.data.updates.schedulerMasters[self.sched.objectid]
+            del self.master.data.updates.schedulerMasters[sched_id]
 
     class FakeChange:
         who = ''
@@ -169,19 +180,33 @@ class SchedulerMixin(interfaces.InterfaceTests):
         ch.__dict__.update(kwargs)
         return ch
 
+    @defer.inlineCallbacks
     def _addBuildsetReturnValue(self, builderNames):
         if builderNames is None:
             builderNames = self.sched.builderNames
-        bsid = self._bsidGenerator.next()
-        brids = dict(zip(builderNames, self._bridGenerator))
-        return defer.succeed((bsid, brids))
+        builderids = []
+        builders = yield self.db.builders.getBuilders()
+        for builderName in builderNames:
+            for bldrDict in builders:
+                if builderName == bldrDict["name"]:
+                    builderids.append(bldrDict["id"])
+                    break
 
-    def fake_addBuildsetForSourceStampsWithDefaults(self, reason, sourcestamps,
+        assert len(builderids) == len(builderNames)
+        bsid = next(self._bsidGenerator)
+        brids = dict(zip(builderids, self._bridGenerator))
+        defer.returnValue((bsid, brids))
+
+    def fake_addBuildsetForSourceStampsWithDefaults(self, reason, sourcestamps=None,
                                                     waited_for=False, properties=None,
                                                     builderNames=None, **kw):
-        properties = properties.asDict()
+        properties = properties.asDict() if properties is not None else None
         self.assertIsInstance(sourcestamps, list)
-        sourcestamps.sort()
+
+        def sourceStampKey(sourceStamp):
+            return sourceStamp.get("codebase")
+
+        sourcestamps = sorted(sourcestamps, key=sourceStampKey)
         self.addBuildsetCalls.append(('addBuildsetForSourceStampsWithDefaults',
                                       dict(reason=reason, sourcestamps=sourcestamps,
                                            waited_for=waited_for, properties=properties,
@@ -189,7 +214,9 @@ class SchedulerMixin(interfaces.InterfaceTests):
         return self._addBuildsetReturnValue(builderNames)
 
     def fake_addBuildsetForChanges(self, waited_for=False, reason='', external_idstring=None,
-                                   changeids=[], builderNames=None, properties=None, **kw):
+                                   changeids=None, builderNames=None, properties=None, **kw):
+        if changeids is None:
+            changeids = []
         properties = properties.asDict() if properties is not None else None
         self.addBuildsetCalls.append(('addBuildsetForChanges',
                                       dict(waited_for=waited_for, reason=reason,
@@ -199,13 +226,15 @@ class SchedulerMixin(interfaces.InterfaceTests):
                                            )))
         return self._addBuildsetReturnValue(builderNames)
 
-    def fake_addBuildsetForSourceStamps(self, waited_for=False, sourcestamps=[],
+    def fake_addBuildsetForSourceStamps(self, waited_for=False, sourcestamps=None,
                                         reason='', external_idstring=None, properties=None,
                                         builderNames=None, **kw):
+        if sourcestamps is None:
+            sourcestamps = []
         properties = properties.asDict() if properties is not None else None
         self.assertIsInstance(sourcestamps, list)
         sourcestamps.sort()
-        self.addBuildsetCalls.append(('addBuildsetForSourceStamp',
+        self.addBuildsetCalls.append(('addBuildsetForSourceStamps',
                                       dict(reason=reason, external_idstring=external_idstring,
                                            properties=properties, builderNames=builderNames,
                                            sourcestamps=sourcestamps)))

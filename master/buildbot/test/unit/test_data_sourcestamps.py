@@ -13,10 +13,14 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.trial import unittest
+
 from buildbot.data import sourcestamps
 from buildbot.test.fake import fakedb
 from buildbot.test.util import endpoint
-from twisted.trial import unittest
 
 
 class SourceStampEndpoint(endpoint.EndpointMixin, unittest.TestCase):
@@ -57,7 +61,7 @@ class SourceStampEndpoint(endpoint.EndpointMixin, unittest.TestCase):
             self.assertEqual(sourcestamp['patch'], {
                 'patchid': 99,
                 'author': u'bar',
-                'body': 'hello, world',
+                'body': b'hello, world',
                 'comment': u'foo',
                 'level': 3,
                 'subdir': u'/foo',
@@ -97,11 +101,6 @@ class SourceStampsEndpoint(endpoint.EndpointMixin, unittest.TestCase):
             self.assertEqual(sorted([m['ssid'] for m in sourcestamps]),
                              [13, 14])
         return d
-
-    def test_startConsuming(self):
-        return self.callStartConsuming({}, {},
-                                       expected_filter=('sourcestamps',
-                                                        None, None))
 
 
 class SourceStamp(unittest.TestCase):

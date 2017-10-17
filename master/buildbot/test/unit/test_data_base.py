@@ -13,12 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
+
+from twisted.trial import unittest
 
 from buildbot.data import base
 from buildbot.test.fake import fakemaster
 from buildbot.test.util import endpoint
-from twisted.trial import unittest
 
 
 class ResourceType(unittest.TestCase):
@@ -71,7 +75,8 @@ class ResourceType(unittest.TestCase):
         master = fakemaster.make_master(testcase=self, wantMq=True)
         master.mq.verifyMessages = False  # since this is a pretend message
         inst = MyResourceType(master)
-        self.assertEqual(inst.eventPaths, ['builder/{builderid}/build/{number}', 'build/{buildid}'])
+        self.assertEqual(
+            inst.eventPaths, ['builder/{builderid}/build/{number}', 'build/{buildid}'])
 
 
 class Endpoint(endpoint.EndpointMixin, unittest.TestCase):

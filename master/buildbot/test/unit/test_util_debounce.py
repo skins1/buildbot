@@ -13,23 +13,29 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot.util import debounce
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import itervalues
+
 from twisted.internet import defer
 from twisted.internet import task
 from twisted.python import failure
 from twisted.python import log
 from twisted.trial import unittest
 
+from buildbot.util import debounce
+
 
 class DebouncedClass(object):
 
-    def __init__(self):
+    def __init__(self, reactor):
         self.callDeferred = None
         self.calls = 0
         self.expCalls = 0
         self.stopDeferreds = []
+        self.reactor = reactor
 
-    @debounce.method(wait=4.0)
+    @debounce.method(wait=4.0, get_reactor=lambda self: self.reactor)
     def maybe(self):
         assert not self.callDeferred
         self.calls += 1
@@ -50,10 +56,8 @@ class DebounceTest(unittest.TestCase):
         self.clock = task.Clock()
 
     def scenario(self, events):
-        dbs = dict((k, DebouncedClass())
+        dbs = dict((k, DebouncedClass(self.clock))
                    for k in set([n for n, _, _ in events]))
-        for db in dbs.values():
-            db.maybe._reactor = self.clock
         while events:
             n, t, e = events.pop(0)
             db = dbs[n]
@@ -85,7 +89,7 @@ class DebounceTest(unittest.TestCase):
                 db.stopDeferreds.pop()
             else:
                 self.fail("unknown scenario event %s" % e)
-            for db in dbs.values():
+            for db in itervalues(dbs):
                 self.assertEqual(db.calls, db.expCalls)
 
     def test_called_once(self):
@@ -100,7 +104,7 @@ class DebounceTest(unittest.TestCase):
         ])
 
     def test_coalesce_calls(self):
-        """Multiple calls are ecoalesced during 4 seconds, but the function
+        """Multiple calls are coalesced during 4 seconds, but the function
         runs 4 seconds after the first call."""
         self.scenario([
             (1, 0.0, 'maybe'),

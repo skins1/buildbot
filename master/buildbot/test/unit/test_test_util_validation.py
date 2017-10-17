@@ -13,12 +13,17 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import datetime
+import locale
+
+from twisted.python import log
+from twisted.trial import unittest
 
 from buildbot.test.util import validation
 from buildbot.util import UTC
-from twisted.python import log
-from twisted.trial import unittest
 
 
 class VerifyDict(unittest.TestCase):
@@ -57,13 +62,13 @@ class VerifyDict(unittest.TestCase):
                               good=[
                                   u"unicode only"
         ], bad=[
-                                  None, "bytestring"
+                                  None, b"bytestring"
         ])
 
     def test_BinaryValidator(self):
         self.doValidationTest(validation.BinaryValidator(),
                               good=[
-                                  "bytestring"
+                                  b"bytestring"
         ], bad=[
                                   None, u"no unicode"
         ])
@@ -80,11 +85,20 @@ class VerifyDict(unittest.TestCase):
         ])
 
     def test_IdentifierValidator(self):
+        os_encoding = locale.getpreferredencoding()
+        try:
+            u'\N{SNOWMAN}'.encode(os_encoding)
+        except UnicodeEncodeError:
+            # Default encoding of Windows console is 'cp1252'
+            # which cannot encode the snowman.
+            raise(unittest.SkipTest("Cannot encode weird unicode "
+                "on this platform with {}".format(os_encoding)))
+
         self.doValidationTest(validation.IdentifierValidator(50),
                               good=[
                                   u"linux", u"Linux", u"abc123", u"a" * 50,
         ], bad=[
-                                  None, u'', 'linux', u'a/b', u'\N{SNOWMAN}', u"a.b.c.d",
+                                  None, u'', b'linux', u'a/b', u'\N{SNOWMAN}', u"a.b.c.d",
                                   u"a-b_c.d9", 'spaces not allowed', u"a" * 51,
                                   u"123 no initial digits",
         ])
@@ -148,19 +162,19 @@ class VerifyDict(unittest.TestCase):
                               good=[
                                   {u'pname': ('{"a":"b"}', u'test')},
         ], bad=[
-                                  None, 1, "hi",
-                                  {u'pname': {'a': 'b'}},  # no source
+                                  None, 1, b"hi",
+                                  {u'pname': {b'a': b'b'}},  # no source
                                   # name not unicode
-                                  {'pname': ({'a': 'b'}, u'test')},
+                                  {'pname': ({b'a': b'b'}, u'test')},
                                   # source not unicode
-                                  {u'pname': ({'a': 'b'}, 'test')},
+                                  {u'pname': ({b'a': b'b'}, 'test')},
                                   # self is not json-able
                                   {u'pname': (self, u'test')},
         ])
 
     def test_MessageValidator(self):
         self.doValidationTest(validation.MessageValidator(
-            events=['started', 'stopped'],
+            events=[b'started', b'stopped'],
             messageValidator=validation.DictValidator(
                 a=validation.BooleanValidator(),
                 xid=validation.IntValidator(),

@@ -13,12 +13,17 @@
 #
 # Copyright Buildbot Team Members
 
-import UserList
+from __future__ import absolute_import
+from __future__ import print_function
+from future.builtins import range
+from future.moves.collections import UserList
+
 import copy
 import re
 
-from buildbot.data import exceptions
 from twisted.internet import defer
+
+from buildbot.data import exceptions
 
 
 class ResourceType(object):
@@ -48,7 +53,7 @@ class ResourceType(object):
 
     def getEndpoints(self):
         endpoints = self.endpoints[:]
-        for i in xrange(len(endpoints)):
+        for i in range(len(endpoints)):
             ep = endpoints[i]
             if not issubclass(ep, Endpoint):
                 raise TypeError("Not an Endpoint subclass")
@@ -73,6 +78,7 @@ class Endpoint(object):
     pathPatterns = ""
     rootLinkName = None
     isCollection = False
+    isRaw = False
 
     def __init__(self, rtype, master):
         self.rtype = rtype
@@ -84,8 +90,8 @@ class Endpoint(object):
     def control(self, action, args, kwargs):
         raise exceptions.InvalidControlException
 
-    def startConsuming(self, callback, options, kwargs):
-        raise NotImplementedError
+    def __repr__(self):
+        return "endpoint for " + self.pathPatterns
 
 
 class BuildNestingMixin(object):
@@ -102,8 +108,11 @@ class BuildNestingMixin(object):
         if 'buildid' in kwargs:
             defer.returnValue(kwargs['buildid'])
         else:
+            builderid = yield self.getBuilderId(kwargs)
+            if builderid is None:
+                return
             build = yield self.master.db.builds.getBuildByNumber(
-                builderid=kwargs['builderid'],
+                builderid=builderid,
                 number=kwargs['build_number'])
             if not build:
                 return
@@ -119,32 +128,35 @@ class BuildNestingMixin(object):
                 return
 
             dbdict = yield self.master.db.steps.getStep(buildid=buildid,
-                                                        number=kwargs.get('step_number'),
+                                                        number=kwargs.get(
+                                                            'step_number'),
                                                         name=kwargs.get('step_name'))
             if not dbdict:
                 return
             defer.returnValue(dbdict['id'])
 
+    def getBuilderId(self, kwargs):
+        if 'buildername' in kwargs:
+            return self.master.db.builders.findBuilderId(kwargs['buildername'], autoCreate=False)
+        return defer.succeed(kwargs['builderid'])
 
-class ListResult(UserList.UserList):
+
+class ListResult(UserList):
 
     __slots__ = ['offset', 'total', 'limit']
 
-    # if set, this is the index in the overall results of the first element of
-    # this list
-    offset = None
-
-    # if set, this is the total number of results
-    total = None
-
-    # if set, this is the limit, either from the user or the implementation
-    limit = None
-
     def __init__(self, values,
                  offset=None, total=None, limit=None):
-        UserList.UserList.__init__(self, values)
+        UserList.__init__(self, values)
+
+        # if set, this is the index in the overall results of the first element of
+        # this list
         self.offset = offset
+
+        # if set, this is the total number of results
         self.total = total
+
+        # if set, this is the limit, either from the user or the implementation
         self.limit = limit
 
     def __repr__(self):
@@ -157,10 +169,9 @@ class ListResult(UserList.UserList):
                 and self.offset == other.offset \
                 and self.total == other.total \
                 and self.limit == other.limit
-        else:
-            return self.data == other \
-                and self.offset == self.limit is None \
-                and (self.total is None or self.total == len(other))
+        return self.data == other \
+            and self.offset == self.limit is None \
+            and (self.total is None or self.total == len(other))
 
     def __ne__(self, other):
         return not (self == other)

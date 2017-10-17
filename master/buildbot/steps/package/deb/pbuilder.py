@@ -17,6 +17,9 @@
 Steps and objects related to pbuilder
 """
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import re
 import stat
 import time
@@ -37,8 +40,8 @@ class DebPbuilder(WarningCountingShellCommand):
 
     haltOnFailure = 1
     flunkOnFailure = 1
-    description = ["pdebuilding"]
-    descriptionDone = ["pdebuild"]
+    description = ["building"]
+    descriptionDone = ["built"]
 
     warningPattern = r".*(warning[: ]|\sW: ).*"
 
@@ -112,14 +115,17 @@ class DebPbuilder(WarningCountingShellCommand):
         if not self.distribution:
             config.error("You must specify a distribution.")
 
-        self.command = ['pdebuild', '--buildresult', '.', '--pbuilder', self.pbuilder]
+        self.command = [
+            'pdebuild', '--buildresult', '.', '--pbuilder', self.pbuilder]
         if self.architecture:
             self.command += ['--architecture', self.architecture]
-        self.command += ['--', '--buildresult', '.', self.baseOption, self.basetgz]
+        self.command += ['--', '--buildresult',
+                         '.', self.baseOption, self.basetgz]
         if self.extrapackages:
             self.command += ['--extrapackages', " ".join(self.extrapackages)]
 
-        self.suppressions.append((None, re.compile(r"\.pbuilderrc does not exist"), None, None))
+        self.suppressions.append(
+            (None, re.compile(r"\.pbuilderrc does not exist"), None, None))
 
         self.addLogObserver(
             'stdio', logobserver.LineConsumerLogObserver(self.logConsumer))
@@ -148,7 +154,7 @@ class DebPbuilder(WarningCountingShellCommand):
             if self.components:
                 command += ['--components', self.components]
 
-            cmd = remotecommand.RemoteShellCommand(self.getWorkdir(), command)
+            cmd = remotecommand.RemoteShellCommand(self.workdir, command)
 
             stdio_log = stdio_log = self.addLog("pbuilder")
             cmd.useLog(stdio_log, True, "stdio")
@@ -167,11 +173,10 @@ class DebPbuilder(WarningCountingShellCommand):
                 command = ['sudo', self.pbuilder, '--update',
                            self.baseOption, self.basetgz]
 
-                cmd = remotecommand.RemoteShellCommand(self.getWorkdir(), command)
+                cmd = remotecommand.RemoteShellCommand(self.workdir, command)
                 stdio_log = stdio_log = self.addLog("pbuilder")
                 cmd.useLog(stdio_log, True, "stdio")
                 d = self.runCommand(cmd)
-                self.step_status.setText(["PBuilder update."])
                 d.addCallback(lambda res: self.startBuild(cmd))
                 return d
             return self.startBuild(cmd)
@@ -199,9 +204,6 @@ class DebCowbuilder(DebPbuilder):
 
     """Build a debian package with cowbuilder inside of a chroot."""
     name = "cowbuilder"
-
-    description = ["pdebuilding"]
-    descriptionDone = ["pdebuild"]
 
     basetgz = "/var/cache/pbuilder/%(distribution)s-%(architecture)s-buildbot.cow/"
 

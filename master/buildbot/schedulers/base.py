@@ -13,85 +13,143 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import integer_types
+from future.utils import iteritems
+from future.utils import string_types
+
+from twisted.internet import defer
+from twisted.python import failure
+from twisted.python import log
+from zope.interface import implementer
+
 from buildbot import config
 from buildbot import interfaces
 from buildbot.changes import changes
 from buildbot.process.properties import Properties
-from buildbot.util.service import ClusteredService
+from buildbot.util.service import ClusteredBuildbotService
 from buildbot.util.state import StateMixin
-from twisted.internet import defer
-from twisted.python import failure
-from twisted.python import log
-from zope.interface import implements
 
 
-class BaseScheduler(ClusteredService, StateMixin):
-
-    implements(interfaces.IScheduler)
+@implementer(interfaces.IScheduler)
+class BaseScheduler(ClusteredBuildbotService, StateMixin):
 
     DEFAULT_CODEBASES = {'': {}}
 
-    compare_attrs = ClusteredService.compare_attrs + \
+    compare_attrs = ClusteredBuildbotService.compare_attrs + \
         ('builderNames', 'properties', 'codebases')
 
-    def __init__(self, name, builderNames, properties,
+    def __init__(self, name, builderNames, properties=None,
                  codebases=DEFAULT_CODEBASES):
-        ClusteredService.__init__(self, name)
+        super(BaseScheduler, self).__init__(name=name)
 
         ok = True
-        if not isinstance(builderNames, (list, tuple)):
-            ok = False
-        else:
+        if interfaces.IRenderable.providedBy(builderNames):
+            pass
+        elif isinstance(builderNames, (list, tuple)):
             for b in builderNames:
-                if not isinstance(b, basestring):
+                if not isinstance(b, string_types) and \
+                        not interfaces.IRenderable.providedBy(b):
                     ok = False
+        else:
+            ok = False
         if not ok:
             config.error(
                 "The builderNames argument to a scheduler must be a list "
-                "of Builder names.")
+                "of Builder names or an IRenderable object that will render"
+                "to a list of builder names.")
 
         self.builderNames = builderNames
 
+        if properties is None:
+            properties = {}
         self.properties = Properties()
         self.properties.update(properties, "Scheduler")
         self.properties.setProperty("scheduler", name, "Scheduler")
         self.objectid = None
-        self.master = None
 
         # Set the codebases that are necessary to process the changes
         # These codebases will always result in a sourcestamp with or without
         # changes
-        if codebases is not None:
-            if not isinstance(codebases, dict):
-                config.error("Codebases must be a dict of dicts")
-            for codebase, codebase_attrs in codebases.iteritems():
-                if not isinstance(codebase_attrs, dict):
-                    config.error("Codebases must be a dict of dicts")
-                if (codebases != BaseScheduler.DEFAULT_CODEBASES and
-                        'repository' not in codebase_attrs):
-                    config.error(
-                        "The key 'repository' is mandatory in codebases")
-        else:
+        known_keys = set(['branch', 'repository', 'revision'])
+        if codebases is None:
             config.error("Codebases cannot be None")
+        elif isinstance(codebases, list):
+            codebases = dict((codebase, {}) for codebase in codebases)
+        elif not isinstance(codebases, dict):
+            config.error(
+                "Codebases must be a dict of dicts, or list of strings")
+        else:
+            for codebase, attrs in iteritems(codebases):
+                if not isinstance(attrs, dict):
+                    config.error("Codebases must be a dict of dicts")
+                else:
+                    unk = set(attrs) - known_keys
+                    if unk:
+                        config.error(
+                            "Unknown codebase keys %s for codebase %s"
+                            % (', '.join(unk), codebase))
 
         self.codebases = codebases
 
         # internal variables
         self._change_consumer = None
+        self._enable_consumer = None
         self._change_consumption_lock = defer.DeferredLock()
 
+        self.enabled = True
+
+    def reconfigService(self, *args, **kwargs):
+        raise NotImplementedError()
+
     # activity handling
-
+    @defer.inlineCallbacks
     def activate(self):
-        return defer.succeed(None)
+        if not self.enabled:
+            yield defer.returnValue(None)
+            return
 
+        # even if we aren't called via _activityPoll(), at this point we
+        # need to ensure the service id is set correctly
+        if self.serviceid is None:
+            self.serviceid = yield self._getServiceId()
+            assert self.serviceid is not None
+
+        schedulerData = yield self._getScheduler(self.serviceid)
+
+        if schedulerData:
+            self.enabled = schedulerData['enabled']
+
+        if not self._enable_consumer:
+            yield self.startConsumingEnableEvents()
+
+    def _enabledCallback(self, key, msg):
+        if msg['enabled']:
+            self.enabled = True
+            d = self.activate()
+        else:
+            d = self.deactivate()
+
+            def fn(x):
+                self.enabled = False
+
+            d.addCallback(fn)
+        return d
+
+    @defer.inlineCallbacks
     def deactivate(self):
-        return defer.maybeDeferred(self._stopConsumingChanges)
+        if not self.enabled:
+            return
+        yield defer.maybeDeferred(self._stopConsumingChanges)
 
     # service handling
 
     def _getServiceId(self):
         return self.master.data.updates.findSchedulerId(self.name)
+
+    def _getScheduler(self, sid):
+        return self.master.db.schedulers.getScheduler(sid)
 
     def _claimService(self):
         return self.master.data.updates.trySetSchedulerMaster(self.serviceid,
@@ -108,9 +166,6 @@ class BaseScheduler(ClusteredService, StateMixin):
     def listBuilderNames(self):
         return self.builderNames
 
-    def getPendingBuildTimes(self):
-        return []
-
     # change handling
 
     @defer.inlineCallbacks
@@ -120,11 +175,17 @@ class BaseScheduler(ClusteredService, StateMixin):
 
         # register for changes with the data API
         assert not self._change_consumer
-        self._change_consumer = yield self.master.data.startConsuming(
+        self._change_consumer = yield self.master.mq.startConsuming(
             lambda k, m: self._changeCallback(k, m, fileIsImportant,
                                               change_filter, onlyImportant),
-            {},
-            ('changes',))
+            ('changes', None, 'new'))
+
+    @defer.inlineCallbacks
+    def startConsumingEnableEvents(self):
+        assert not self._enable_consumer
+        self._enable_consumer = yield self.master.mq.startConsuming(
+            self._enabledCallback,
+            ('schedulers', str(self.serviceid), 'updated'))
 
     @defer.inlineCallbacks
     def _changeCallback(self, key, msg, fileIsImportant, change_filter,
@@ -146,6 +207,7 @@ class BaseScheduler(ClusteredService, StateMixin):
                     'not processed by scheduler %(name)s',
                     codebase=change.codebase, name=self.name)
             return
+
         if fileIsImportant:
             try:
                 important = fileIsImportant(change)
@@ -180,10 +242,10 @@ class BaseScheduler(ClusteredService, StateMixin):
 
     # starting builds
 
-    def addBuildsetForSourceStampsWithDefaults(self, reason, sourcestamps,
+    @defer.inlineCallbacks
+    def addBuildsetForSourceStampsWithDefaults(self, reason, sourcestamps=None,
                                                waited_for=False, properties=None, builderNames=None,
                                                **kw):
-
         if sourcestamps is None:
             sourcestamps = []
 
@@ -198,28 +260,54 @@ class BaseScheduler(ClusteredService, StateMixin):
         # Merge codebases with the passed list of sourcestamps
         # This results in a new sourcestamp for each codebase
         stampsWithDefaults = []
-        for codebase in stampsByCodebase:
-            ss = self.codebases.get(codebase, {}).copy()
+        for codebase in self.codebases:
+            cb = yield self.getCodebaseDict(codebase)
+            ss = {
+                'codebase': codebase,
+                'repository': cb.get('repository', ''),
+                'branch': cb.get('branch', None),
+                'revision': cb.get('revision', None),
+                'project': '',
+            }
             # apply info from passed sourcestamps onto the configured default
             # sourcestamp attributes for this codebase.
-            ss.update(stampsByCodebase[codebase])
+            ss.update(stampsByCodebase.get(codebase, {}))
             stampsWithDefaults.append(ss)
 
-        return self.addBuildsetForSourceStamps(sourcestamps=stampsWithDefaults,
-                                               reason=reason, waited_for=waited_for, properties=properties,
-                                               builderNames=builderNames,
-                                               **kw)
+        # fill in any supplied sourcestamps that aren't for a codebase in the
+        # scheduler's codebase dictionary
+        for codebase in set(stampsByCodebase) - set(self.codebases):
+            cb = stampsByCodebase[codebase]
+            ss = {
+                'codebase': codebase,
+                'repository': cb.get('repository', ''),
+                'branch': cb.get('branch', None),
+                'revision': cb.get('revision', None),
+                'project': '',
+            }
+            stampsWithDefaults.append(ss)
+
+        rv = yield self.addBuildsetForSourceStamps(
+            sourcestamps=stampsWithDefaults, reason=reason,
+            waited_for=waited_for, properties=properties,
+            builderNames=builderNames, **kw)
+        defer.returnValue(rv)
 
     def getCodebaseDict(self, codebase):
         # Hook for subclasses to change codebase parameters when a codebase does
         # not have a change associated with it.
-        return self.codebases[codebase]
+        try:
+            return defer.succeed(self.codebases[codebase])
+        except KeyError:
+            return defer.fail()
 
     @defer.inlineCallbacks
     def addBuildsetForChanges(self, waited_for=False, reason='',
-                              external_idstring=None, changeids=[], builderNames=None,
+                              external_idstring=None, changeids=None, builderNames=None,
                               properties=None,
                               **kw):
+        if changeids is None:
+            changeids = []
         changesByCodebase = {}
 
         def get_last_change_for_codebase(codebase):
@@ -231,14 +319,15 @@ class BaseScheduler(ClusteredService, StateMixin):
             changesByCodebase.setdefault(chdict["codebase"], []).append(chdict)
 
         sourcestamps = []
-        for codebase in self.codebases:
+        for codebase in sorted(self.codebases):
             if codebase not in changesByCodebase:
                 # codebase has no changes
                 # create a sourcestamp that has no changes
-                cb = self.getCodebaseDict(codebase)
+                cb = yield self.getCodebaseDict(codebase)
+
                 ss = {
                     'codebase': codebase,
-                    'repository': cb['repository'],
+                    'repository': cb.get('repository', ''),
                     'branch': cb.get('branch', None),
                     'revision': cb.get('revision', None),
                     'project': '',
@@ -256,24 +345,62 @@ class BaseScheduler(ClusteredService, StateMixin):
 
         defer.returnValue((bsid, brids))
 
-    def addBuildsetForSourceStamps(self, waited_for=False, sourcestamps=[],
+    @defer.inlineCallbacks
+    def addBuildsetForSourceStamps(self, waited_for=False, sourcestamps=None,
                                    reason='', external_idstring=None, properties=None,
                                    builderNames=None, **kw):
+        if sourcestamps is None:
+            sourcestamps = []
         # combine properties
         if properties:
             properties.updateFromProperties(self.properties)
         else:
             properties = self.properties
 
+        # make a fresh copy that we actually can modify safely
+        properties = Properties.fromDict(properties.asDict())
+
+        # make extra info available from properties.render()
+        properties.master = self.master
+        properties.sourcestamps = []
+        properties.changes = []
+        for ss in sourcestamps:
+            if isinstance(ss, integer_types):
+                # fetch actual sourcestamp and changes from data API
+                properties.sourcestamps.append(
+                    (yield self.master.data.get(('sourcestamps', ss))))
+                properties.changes.extend(
+                    (yield self.master.data.get(('sourcestamps', ss, 'changes'))))
+            else:
+                # sourcestamp with no change, see addBuildsetForChanges
+                properties.sourcestamps.append(ss)
+
+        for c in properties.changes:
+            properties.updateFromProperties(Properties.fromDict(c['properties']))
+
         # apply the default builderNames
         if not builderNames:
             builderNames = self.builderNames
+
+        # dynamically get the builder list to schedule
+        builderNames = yield properties.render(builderNames)
+
+        # Get the builder ids
+        # Note that there is a data.updates.findBuilderId(name)
+        # but that would merely only optimize the single builder case, while
+        # probably the multiple builder case will be severely impacted by the
+        # several db requests needed.
+        builderids = list()
+        for bldr in (yield self.master.data.get(('builders', ))):
+            if bldr['name'] in builderNames:
+                builderids.append(bldr['builderid'])
 
         # translate properties object into a dict as required by the
         # addBuildset method
         properties_dict = properties.asDict()
 
-        return self.master.data.updates.addBuildset(
+        bsid, brids = yield self.master.data.updates.addBuildset(
             scheduler=self.name, sourcestamps=sourcestamps, reason=reason,
-            waited_for=waited_for, properties=properties_dict, builderNames=builderNames,
+            waited_for=waited_for, properties=properties_dict, builderids=builderids,
             external_idstring=external_idstring, **kw)
+        defer.returnValue((bsid, brids))

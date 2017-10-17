@@ -6,7 +6,12 @@ For the most part, such configurations consist of subclasses set up for use in a
 
 This chapter describes some of the more common idioms in advanced Buildbot configurations.
 
-At the moment, this chapter is an unordered set of suggestions; if you'd like to clean it up, fork the project on GitHub and get started!
+At the moment, this chapter is an unordered set of suggestions:
+
+.. contents::
+   :local:
+
+If you'd like to clean it up, fork the project on GitHub and get started!
 
 Programmatic Configuration Generation
 -------------------------------------
@@ -16,7 +21,7 @@ For example, the following will generate a builder for each of a range of suppor
 
     pythons = ['python2.4', 'python2.5', 'python2.6', 'python2.7',
                'python3.2', 'python3.3']
-    pytest_slaves = ["slave%s" % n for n in range(10)]
+    pytest_workers = ["worker%s" % n for n in range(10)]
     for python in pythons:
         f = util.BuildFactory()
         f.addStep(steps.SVN(...))
@@ -24,59 +29,123 @@ For example, the following will generate a builder for each of a range of suppor
         c['builders'].append(util.BuilderConfig(
                 name="test-%s" % python,
                 factory=f,
-                slavenames=pytest_slaves))
+                workernames=pytest_workers))
 
-.. _Merge-Request-Functions:
+Next step would be the loading of ``pythons`` list from a .yaml/.ini file.
 
-Merge Request Functions
------------------------
+.. _Collapse-Request-Functions:
 
-.. index:: Builds; merging
+Collapse Request Functions
+--------------------------
 
-.. warning:
+.. index:: Builds; collapsing
 
-    This section is no longer accurate in Buildbot 0.9.x
 
-The logic Buildbot uses to decide which build request can be merged can be customized by providing a Python function (a callable) instead of ``True`` or ``False`` described in :ref:`Merging-Build-Requests`.
+The logic Buildbot uses to decide which build request can be merged can be customized by providing a Python function (a callable) instead of ``True`` or ``False`` described in :ref:`Collapsing-Build-Requests`.
 
-The callable will be invoked with three positional arguments: a :class:`Builder` object and two :class:`BuildRequest` objects.
+Arguments for the callable are:
+
+    ``master``
+        pointer to the master object, which can be used to make additional data api calls via `master.data.get`
+
+    ``builder``
+        dictionary of type :bb:rtype:`builder`
+
+    ``req1``
+        dictionary of type :bb:rtype:`buildrequest`
+
+    ``req2``
+        dictionary of type :bb:rtype:`buildrequest`
+
+.. warning::
+
+    The number of invocations of the callable is proportional to the square of the request queue length, so a long-running callable may cause undesirable delays when the queue length grows.
+
 It should return true if the requests can be merged, and False otherwise.
 For example::
 
-    def mergeRequests(builder, req1, req2):
+    @defer.inlineCallbacks
+    def collapseRequests(master, builder, req1, req2):
         "any requests with the same branch can be merged"
-        return req1.source.branch == req2.source.branch
-    c['mergeRequests'] = mergeRequests
 
-In many cases, the details of the :class:`SourceStamp`\s and :class:`BuildRequest`\s are important.
-In this example, only :class:`BuildRequest`\s with the same "reason" are merged; thus developers forcing builds for different reasons will see distinct builds.
-Note the use of the :func:`canBeMergedWith` method to access the source stamp compatibility algorithm.
-Note, in particular, that this function returns a Deferred as of Buildbot-0.9.0.
+        # get the buildsets for each buildrequest
+        selfBuildset , otherBuildset = yield defer.gatherResults([
+            master.data.get(('buildsets', req1['buildsetid'])),
+            master.data.get(('buildsets', req2['buildsetid']))
+            ])
+        selfSourcestamps = selfBuildset['sourcestamps']
+        otherSourcestamps = otherBuildset['sourcestamps']
+
+        if len(selfSourcestamps) != len(otherSourcestamps):
+            defer.returnValue(False)
+
+        for selfSourcestamp, otherSourcestamp in zip(selfSourcestamps, otherSourcestamps):
+            if selfSourcestamp['branch'] != otherSourcestamp['branch']:
+                defer.returnValue(False)
+
+        defer.returnValue(True)
+
+    c['collapseRequests'] = collapseRequests
+
+In many cases, the details of the :bb:rtype:`sourcestamp` and :bb:rtype:`buildrequest` are important.
+
+In the following example, only :bb:rtype:`buildrequest` with the same "reason" are merged; thus developers forcing builds for different reasons will see distinct builds.
+
+Note the use of the :py:meth:`buildrequest.BuildRequest.canBeCollapsed` method to access the source stamp compatibility algorithm.
 
 ::
 
     @defer.inlineCallbacks
-    def mergeRequests(builder, req1, req2):
-        if (yield req1.source.canBeMergedWith(req2.source)) and req1.reason == req2.reason:
+    def collapseRequests(master, builder, req1, req2):
+        canBeCollapsed = yield buildrequest.BuildRequest.canBeCollapsed(master, req1, req2)
+        if canBeCollapsed and req1.reason == req2.reason:
            defer.returnValue(True)
         else:
            defer.returnValue(False)
-    c['mergeRequests'] = mergeRequests
+    c['collapseRequests'] = collapseRequests
 
-If it's necessary to perform some extended operation to determine whether two requests can be merged, then the ``mergeRequests`` callable may return its result via Deferred.
-Note, however, that the number of invocations of the callable is proportional to the square of the request queue length, so a long-running callable may cause undesirable delays when the queue length grows.
+Another common example is to prevent collapsing of requests coming from a :bb:step:`Trigger` step.
+:bb:step:`Trigger` step can indeed be used in order to implement parallel testing of the same source.
+
+Buildrequests will all have the same sourcestamp, but probably different properties, and shall not be collapsed.
+
+.. note::
+
+    In most of the cases, just setting collapseRequests=False for triggered builders will do the trick.
+
+In other cases, ``parent_buildid`` from buildset can be used::
+
+    @defer.inlineCallbacks
+    def collapseRequests(master, builder, req1, req2):
+        canBeCollapsed = yield buildrequest.BuildRequest.canBeCollapsed(master, req1, req2)
+        selfBuildset , otherBuildset = yield defer.gatherResults([
+            master.data.get(('buildsets', req1['buildsetid'])),
+            master.data.get(('buildsets', req2['buildsetid']))
+        ])
+        if canBeCollapsed and selfBuildset['parent_buildid'] != None and otherBuildset['parent_buildid'] != None:
+           defer.returnValue(True)
+        else:
+           defer.returnValue(False)
+    c['collapseRequests'] = collapseRequests
+
+
+If it's necessary to perform some extended operation to determine whether two requests can be merged, then the ``collapseRequests`` callable may return its result via Deferred.
+
+.. warning::
+
+    Again, the number of invocations of the callable is proportional to the square of the request queue length, so a long-running callable may cause undesirable delays when the queue length grows.
+
 For example::
 
-    def mergeRequests(builder, req1, req2):
-        d = defer.gatherResults([
-            getMergeInfo(req1.source.revision),
-            getMergeInfo(req2.source.revision),
+    @defer.inlineCallbacks
+    def collapseRequests(master, builder, req1, req2):
+        info1, info2 = yield defer.gatherResults([
+            getMergeInfo(req1),
+            getMergeInfo(req2),
         ])
-        def process(info1, info2):
-            return info1 == info2
-        d.addCallback(process)
-        return d
-    c['mergeRequests'] = mergeRequests
+        defer.returnValue(info1 == info2)
+
+    c['collapseRequests'] = collapseRequests
 
 .. _Builder-Priority-Functions:
 
@@ -105,6 +174,26 @@ A simple ``prioritizeBuilders`` implementation might look like this::
         return builders
 
     c['prioritizeBuilders'] = prioritizeBuilders
+
+If the change frequency is higher than the turn-around of the builders,
+the following approach might be helpful:
+
+.. code-block:: python
+
+    def prioritizeBuilders(buildmaster, builders):
+        """Prioritize builders. First, prioritize inactive builders.
+        Second, consider the last time a job was completed (no job is infinite past).
+        Third, consider the time the oldest request has been queued.
+        This provides a simple round-robin scheme that works with collapsed builds."""
+
+        def isBuilding(b):
+            return bool(b.building) or bool(b.old_building)
+
+        builders.sort(key = lambda b: (isBuilding(b), b.getNewestCompleteTime(), b.getOldestRequestTime()))
+        return builders
+
+    c['prioritizeBuilders'] = prioritizeBuilders
+
 
 .. index:: Builds; priority
 
@@ -138,13 +227,44 @@ The ``nextBuild`` function is passed as parameter to :class:`BuilderConfig`::
 
     ... BuilderConfig(..., nextBuild=nextBuild, ...) ...
 
+.. _canStartBuild-Functions:
+
+``canStartBuild`` Functions
+---------------------------
+
+Sometimes, you cannot know in advance what workers to assign to a :class:`BuilderConfig`.
+For example, you might need to check for the existence of a file on a worker before running a build on it.
+It is possible to do that by setting the ``canStartBuild`` callback.
+
+Here is an example that checks if there is a ``vm`` property set for the build request.
+If it is set, it checks if a file named after it exists in the ``/opt/vm`` folder.
+If the file does not exist on the given worker, refuse to run the build to force the master to select another worker.
+
+.. code-block:: python
+
+   @defer.inlineCallbacks
+   def canStartBuild(builder, wfb, request):
+
+       vm = request.properties.get('vm', builder.config.properties.get('vm'))
+       if vm:
+           args = {'file': os.path.join('/opt/vm', vm)}
+           cmd = RemoteCommand('stat', args, stdioLogName=None)
+           cmd.worker = wfb.worker
+           res = yield cmd.run(None, wfb.worker.conn, builder.name)
+           if res.rc != 0:
+               defer.returnValue(False)
+
+       defer.returnValue(True)
+
+You can extend this example using any remote command described in the :doc:`../developer/master-worker`.
+
 .. _Customizing-SVNPoller:
 
 Customizing SVNPoller
 ---------------------
 
 Each source file that is tracked by a Subversion repository has a fully-qualified SVN URL in the following form: :samp:`({REPOURL})({PROJECT-plus-BRANCH})({FILEPATH})`.
-When you create the :bb:chsrc:`SVNPoller`, you give it a ``svnurl`` value that includes all of the :samp:`{REPOURL}` and possibly some portion of the :samp:`{PROJECT-plus-BRANCH}` string.
+When you create the :bb:chsrc:`SVNPoller`, you give it a ``repourl`` value that includes all of the :samp:`{REPOURL}` and possibly some portion of the :samp:`{PROJECT-plus-BRANCH}` string.
 The :bb:chsrc:`SVNPoller` is responsible for producing Changes that contain a branch name and a :samp:`{FILEPATH}` (which is relative to the top of a checked-out tree).
 The details of how these strings are split up depend upon how your repository names its branches.
 
@@ -166,19 +286,19 @@ To set up a :bb:chsrc:`SVNPoller` that watches the Amanda trunk (and nothing els
 
     from buildbot.plugins import changes
     c['change_source'] = changes.SVNPoller(
-       svnurl="https://svn.amanda.sourceforge.net/svnroot/amanda/amanda/trunk")
+       repourl="https://svn.amanda.sourceforge.net/svnroot/amanda/amanda/trunk")
 
 In this case, every Change that our :bb:chsrc:`SVNPoller` produces will have its branch attribute set to ``None``, to indicate that the Change is on the trunk.
 No other sub-projects or branches will be tracked.
 
 If we want our ChangeSource to follow multiple branches, we have to do two things.
-First we have to change our ``svnurl=`` argument to watch more than just ``amanda/trunk``.
+First we have to change our ``repourl=`` argument to watch more than just ``amanda/trunk``.
 We will set it to ``amanda`` so that we'll see both the trunk and all the branches.
-Second, we have to tell :bb:chsrc:`SVNPoller` how to split the ``({PROJECT-plus-BRANCH})({FILEPATH})`` strings it gets from the repository out into ``({BRANCH})`` and ``({FILEPATH})```.
+Second, we have to tell :bb:chsrc:`SVNPoller` how to split the :samp:`({PROJECT-plus-BRANCH})({FILEPATH})` strings it gets from the repository out into :samp:`({BRANCH})` and :samp:`({FILEPATH})`.
 
 We do the latter by providing a ``split_file`` function.
 This function is responsible for splitting something like ``branches/3_3/common-src/amanda.h`` into ``branch='branches/3_3'`` and ``filepath='common-src/amanda.h'``.
-The function is always given a string that names a file relative to the subdirectory pointed to by the :bb:chsrc:`SVNPoller`\'s ``svnurl=`` argument.
+The function is always given a string that names a file relative to the subdirectory pointed to by the :bb:chsrc:`SVNPoller`\'s ``repourl=`` argument.
 It is expected to return a dictionary with at least the ``path`` key.
 The splitter may optionally set ``branch``, ``project`` and ``repository``.
 For backwards compatibility it may return a tuple of ``(branchname, path)``.
@@ -231,7 +351,7 @@ To use it you would do this::
 
     from buildbot.plugins import changes, util
     c['change_source'] = changes.SVNPoller(
-       svnurl="https://svn.amanda.sourceforge.net/svnroot/amanda/",
+       repourl="https://svn.amanda.sourceforge.net/svnroot/amanda/",
        split_file=util.svn.split_file_projects_branches)
 
 Note here that we are monitoring at the root of the repository, and that within that repository is a ``amanda`` subdirectory which in turn has ``trunk`` and ``branches``.
@@ -244,7 +364,7 @@ It is that ``amanda`` subdirectory whose name becomes the ``project`` field of t
 Another common way to organize a Subversion repository is to put the branch name at the top, and the projects underneath.
 This is especially frequent when there are a number of related sub-projects that all get released in a group.
 
-For example, `Divmod.org <http://Divmod.org>`_ hosts a project named `Nevow` as well as one named `Quotient`.
+For example, ``Divmod.org`` hosts a project named `Nevow` as well as one named `Quotient`.
 In a checked-out Nevow tree there is a directory named `formless` that contains a Python source file named :file:`webform.py`.
 This repository is accessible via webdav (and thus uses an `http:` scheme) through the divmod.org hostname.
 There are many branches in this repository, and they use a ``({BRANCHNAME})/({PROJECT})`` naming policy.
@@ -254,13 +374,13 @@ The 1.5.x branch version of this file would have a URL of ``http://divmod.org/sv
 The whole Nevow trunk would be checked out with ``http://divmod.org/svn/Divmod/trunk/Nevow``, while the Quotient trunk would be checked out using ``http://divmod.org/svn/Divmod/trunk/Quotient``.
 
 Now suppose we want to have an :bb:chsrc:`SVNPoller` that only cares about the Nevow trunk.
-This case looks just like the ``{PROJECT}/{BRANCH}`` layout described earlier::
+This case looks just like the :samp:`{PROJECT}/{BRANCH}` layout described earlier::
 
     from buildbot.plugins import changes
     c['change_source'] = changes.SVNPoller("http://divmod.org/svn/Divmod/trunk/Nevow")
 
 But what happens when we want to track multiple Nevow branches?
-We have to point our ``svnurl=`` high enough to see all those branches, but we also don't want to include Quotient changes (since we're only building Nevow).
+We have to point our ``repourl=`` high enough to see all those branches, but we also don't want to include Quotient changes (since we're only building Nevow).
 To accomplish this, we must rely upon the ``split_file`` function to help us tell the difference between files that belong to Nevow and those that belong to Quotient, as well as figuring out which branch each one is on.
 
 ::
@@ -350,10 +470,10 @@ The ``poll`` method should return a Deferred to signal its completion.
 
 Aside from the service methods, the other concerns in the previous section apply here, too.
 
-Writing a New Latent Buildslave Implementation
-----------------------------------------------
+Writing a New Latent Worker Implementation
+------------------------------------------
 
-Writing a new latent buildslave should only require subclassing :class:`buildbot.buildslave.AbstractLatentBuildSlave` and implementing :meth:`start_instance` and :meth:`stop_instance`.
+Writing a new latent worker should only require subclassing :class:`buildbot.worker.AbstractLatentWorker` and implementing :meth:`start_instance` and :meth:`stop_instance`.
 
 ::
 
@@ -371,7 +491,7 @@ Writing a new latent buildslave should only require subclassing :class:`buildbot
         # Callback value is ignored.
         raise NotImplementedError
 
-See :class:`buildbot.buildslave.ec2.EC2LatentBuildSlave` for an example.
+See :class:`buildbot.worker.ec2.EC2LatentWorker` for an example.
 
 Custom Build Classes
 --------------------
@@ -397,17 +517,23 @@ The skeleton of such a project would look like::
 Factory Workdir Functions
 -------------------------
 
+.. note::
+
+    While factory workdir function is still supported, it is better to just use the fact that workdir is a :index:`renderables <renderable>` attribute of every steps.
+    A Renderable has access to much more contextual information, and also can return a deferred.
+    So you could say ``build_factory.workdir = util.Interpolate("%(src:repository)s`` to achieve similar goal.
+
 It is sometimes helpful to have a build's workdir determined at runtime based on the parameters of the build.
 To accomplish this, set the ``workdir`` attribute of the build factory to a callable.
-That callable will be invoked with the :class:`SourceStamp` for the build, and should return the appropriate workdir.
+That callable will be invoked with the list of :class:`SourceStamp` for the build, and should return the appropriate workdir.
 Note that the value must be returned immediately - Deferreds are not supported.
 
 This can be useful, for example, in scenarios with multiple repositories submitting changes to Buildbot.
 In this case you likely will want to have a dedicated workdir per repository, since otherwise a sourcing step with mode = "update" will fail as a workdir with a working copy of repository A can't be "updated" for changes from a repository B.
 Here is an example how you can achieve workdir-per-repo::
 
-        def workdir(source_stamp):
-            return hashlib.md5 (source_stamp.repository).hexdigest()[:8]
+        def workdir(source_stamps):
+            return hashlib.md5(source_stamps[0].repository).hexdigest()[:8]
 
         build_factory = factory.BuildFactory()
         build_factory.workdir = workdir
@@ -415,7 +541,7 @@ Here is an example how you can achieve workdir-per-repo::
         build_factory.addStep(Git(mode="update"))
         # ...
         builders.append ({'name': 'mybuilder',
-                          'slavename': 'myslave',
+                          'workername': 'myworker',
                           'builddir': 'mybuilder',
                           'factory': build_factory})
 
@@ -423,8 +549,8 @@ The end result is a set of workdirs like
 
 .. code-block:: none
 
-    Repo1 => <buildslave-base>/mybuilder/a78890ba
-    Repo2 => <buildslave-base>/mybuilder/0823ba88
+    Repo1 => <worker-base>/mybuilder/a78890ba
+    Repo2 => <worker-base>/mybuilder/0823ba88
 
 You could make the :func:`workdir()` function compute other paths, based on parts of the repo URL in the sourcestamp, or lookup in a lookup table based on repo URL.
 As long as there is a permanent 1:1 mapping between repos and workdir, this will work.
@@ -517,14 +643,14 @@ The :bb:step:`ShellCommand` class implements this ``run`` method, and in most ca
 Running Commands
 ~~~~~~~~~~~~~~~~
 
-To spawn a command in the buildslave, create a :class:`~buildbot.process.remotecommand.RemoteCommand` instance in your step's ``run`` method and run it with :meth:`~buildbot.process.remotecommand.BuildStep.runCommand`::
+To spawn a command in the worker, create a :class:`~buildbot.process.remotecommand.RemoteCommand` instance in your step's ``run`` method and run it with :meth:`~buildbot.process.remotecommand.BuildStep.runCommand`::
 
     cmd = RemoteCommand(args)
     d = self.runCommand(cmd)
 
-The :py:class:`~buildbot.process.buildstep.CommandMixin` class offers a simple interface to several common slave-side commands.
+The :py:class:`~buildbot.process.buildstep.CommandMixin` class offers a simple interface to several common worker-side commands.
 
-For the much more common task of running a shell command on the buildslave, use :py:class:`~buildbot.process.buildstep.ShellMixin`.
+For the much more common task of running a shell command on the worker, use :py:class:`~buildbot.process.buildstep.ShellMixin`.
 This class provides a method to handle the myriad constructor arguments related to shell commands, as well as a method to create new :py:class:`~buildbot.process.remotecommand.RemoteCommand` instances.
 This mixin is the recommended method of implementing custom shell-based steps.
 The older pattern of subclassing ``ShellCommand`` is no longer recommended.
@@ -593,7 +719,7 @@ This latter option makes it easy to save the results to a file and run :command:
 Writing Log Files
 ~~~~~~~~~~~~~~~~~
 
-Most commonly, logfiles come from commands run on the build slave.
+Most commonly, logfiles come from commands run on the worker.
 Internally, these are configured by supplying the :class:`~buildbot.process.remotecommand.RemoteCommand` instance with log files via the :meth:`~buildbot.process.remoteCommand.RemoteCommand.useLog` method::
 
     @defer.inlineCallbacks
@@ -637,8 +763,8 @@ Again, note that the log input must be a unicode string.
 Finally, :meth:`~buildbot.process.buildstep.BuildStep.addHTMLLog` is similar to :meth:`~buildbot.process.buildstep.BuildStep.addCompleteLog`, but the resulting log will be tagged as containing HTML.
 The web UI will display the contents of the log using the browser.
 
-The ``logfiles=`` argument to :bb:step:`ShellCommand` and its subclasses creates new log files and fills them in realtime by asking the buildslave to watch a actual file on disk.
-The buildslave will look for additions in the target file and report them back to the :class:`BuildStep`.
+The ``logfiles=`` argument to :bb:step:`ShellCommand` and its subclasses creates new log files and fills them in realtime by asking the worker to watch a actual file on disk.
+The worker will look for additions in the target file and report them back to the :class:`BuildStep`.
 These additions will be added to the log file by calling :meth:`addStdout`.
 
 All log files can be used as the source of a :class:`~buildbot.process.logobserver.LogObserver` just like the normal :file:`stdio` :class:`LogFile`.
@@ -659,7 +785,7 @@ For commands which only produce a small quantity of output, :class:`~buildbot.pr
 Adding LogObservers
 ~~~~~~~~~~~~~~~~~~~
 
-Most shell commands emit messages to stdout or stderr as they operate, especially if you ask them nicely with a :option:`--verbose` flag of some sort.
+Most shell commands emit messages to stdout or stderr as they operate, especially if you ask them nicely with a option `--verbose` flag of some sort.
 They may also write text to a log file while they run.
 Your :class:`BuildStep` can watch this output as it arrives, to keep track of how much progress the command has made or to process log output for later summarization.
 
@@ -761,7 +887,7 @@ BuildStep URLs
 Each BuildStep has a collection of `links`.
 Each has a name and a target URL.
 The web display displays clickable links for each link, making them a useful way to point to extra information about a step.
-For example, a step that uploads a build result to an external service might include a link to the uploaded flie.
+For example, a step that uploads a build result to an external service might include a link to the uploaded file.
 
 To set one of these links, the :class:`BuildStep` should call the :meth:`~buildbot.process.buildstep.BuildStep.addURL` method with the name of the link and the target URL.
 Multiple URLs can be set.
@@ -770,24 +896,24 @@ For example::
     @defer.inlineCallbacks
     def run(self):
         ... # create and upload report to coverage server
-        url = 'http://coverage.corp.com/reports/%s' % reportname
+        url = 'http://coverage.example.com/reports/%s' % reportname
         yield self.addURL('coverage', url)
 
 Discovering files
 ~~~~~~~~~~~~~~~~~
 
 When implementing a :class:`BuildStep` it may be necessary to know about files that are created during the build.
-There are a few slave commands that can be used to find files on the slave and test for the existence (and type) of files and directories.
+There are a few worker commands that can be used to find files on the worker and test for the existence (and type) of files and directories.
 
-The slave provides the following file-discovery related commands:
+The worker provides the following file-discovery related commands:
 
-* `stat` calls :func:`os.stat` for a file in the slave's build directory.
+* `stat` calls :func:`os.stat` for a file in the worker's build directory.
   This can be used to check if a known file exists and whether it is a regular file, directory or symbolic link.
 
-* `listdir` calls :func:`os.listdir` for a directory on the slave.
-  It can be used to obtain a list of files that are present in a directory on the slave.
+* `listdir` calls :func:`os.listdir` for a directory on the worker.
+  It can be used to obtain a list of files that are present in a directory on the worker.
 
-* `glob` calls :func:`glob.glob` on the slave, with a given shell-style pattern containing wildcards.
+* `glob` calls :func:`glob.glob` on the worker, with a given shell-style pattern containing wildcards.
 
 For example, we could use stat to check if a given path exists and contains ``*.pyc`` files.
 If the path does not exist (or anything fails) we mark the step as failed; if the path exists but is not a directory, we mark the step as having "warnings".
@@ -796,7 +922,7 @@ If the path does not exist (or anything fails) we mark the step as failed; if th
 
 
     from buildbot.plugins import steps, util
-    from buildbot.interfaces import BuildSlaveTooOldError
+    from buildbot.interfaces import WorkerTooOldError
     import stat
 
     class MyBuildStep(steps.BuildStep):
@@ -806,11 +932,11 @@ If the path does not exist (or anything fails) we mark the step as failed; if th
             self.dirname = dirname
 
         def start(self):
-            # make sure the slave knows about stat
-            slavever = (self.slaveVersion('stat'),
-                        self.slaveVersion('glob'))
-            if not all(slavever):
-                raise BuildSlaveToOldError('need stat and glob')
+            # make sure the worker knows about stat
+            workerver = (self.workerVersion('stat'),
+                        self.workerVersion('glob'))
+            if not all(workerver):
+                raise WorkerTooOldError('need stat and glob')
 
             cmd = buildstep.RemoteCommand('stat', {'file': self.dirname})
 
@@ -830,7 +956,7 @@ If the path does not exist (or anything fails) we mark the step as failed; if th
                 self.finished(util.WARNINGS)
                 return
 
-            cmd = buildstep.RemoteCommand('glob', {'glob': self.dirname + '/*.pyc'})
+            cmd = buildstep.RemoteCommand('glob', {'path': self.dirname + '/*.pyc'})
 
             d = self.runCommand(cmd)
             d.addCallback(lambda res: self.evaluateGlob(cmd))
@@ -850,25 +976,94 @@ If the path does not exist (or anything fails) we mark the step as failed; if th
             self.finished(util.SUCCESS)
 
 
-For more information on the available commands, see :doc:`../developer/master-slave`.
+For more information on the available commands, see :doc:`../developer/master-worker`.
 
 .. todo::
 
     Step Progress
     BuildStepFailed
 
-Writing New Status Plugins
---------------------------
+.. _buildbot_wsgi_dashboards:
 
-Each status plugin is an object which provides the :class:`twisted.application.service.IService` interface, which creates a tree of Services with the buildmaster at the top [not strictly true].
-The status plugins are all children of an object which implements :class:`buildbot.interfaces.IStatus`, the main status object.
-From this object, the plugin can retrieve anything it wants about current and past builds.
-It can also subscribe to hear about new and upcoming builds.
+Writing Dashboards with Flask_ or Bottle_
+-----------------------------------------
 
-Status plugins which only react to human queries (like the Waterfall display) never need to subscribe to anything: they are idle until someone asks a question, then wake up and extract the information they need to answer it, then they go back to sleep.
-Plugins which need to act spontaneously when builds complete (like the :class:`MailNotifier` plugin) need to subscribe to hear about new builds.
+Buildbot Nine UI is written in Javascript.
+This allows it to be reactive and real time, but comes at a price of a fair complexity.
+Sometimes, you need a dashboard displaying your build results in your own manner but learning AngularJS for that is just too much.
 
-If the status plugin needs to run network services (like the HTTP server used by the Waterfall plugin), they can be attached as Service children of the plugin itself, using the :class:`IServiceCollection` interface.
+There is a Buildbot plugin which allows to write a server side generated dashboard, and integrate it in the UI.
+
+.. code-block:: python
+
+    # This needs buildbot and buildbot_www >= 0.9.5
+    pip install buildbot_wsgi_dashboards flask
+
+- This plugin can use any WSGI compatible web framework, Flask_ is a very common one, Bottle_ is another popular option.
+
+- The application needs to implement a ``/index.html`` route, which will render the html code representing the dashboard.
+
+- The application framework runs in a thread outside of Twisted.
+  No need to worry about Twisted and asynchronous code.
+  You can use python-requests_ or any library from the python ecosystem to access other servers.
+
+- You could use HTTP in order to access Buildbot :ref:`REST_API`, but you can also use the :ref:`Data_API`, via the provided synchronous wrapper.
+
+    .. py:method:: buildbot_api.dataGet(path, filters=None, fields=None, order=None, limit=None, offset=None):
+
+        :param tuple path: A tuple of path elements representing the API path to fetch.
+            Numbers can be passed as strings or integers.
+        :param filters: result spec filters
+        :param fields: result spec fields
+        :param order: result spec order
+        :param limit: result spec limit
+        :param offset: result spec offset
+        :raises: :py:exc:`~buildbot.data.exceptions.InvalidPathError`
+        :returns: a resource or list, or None
+
+        This is a blocking wrapper to master.data.get as described in :ref:`Data_API`.
+        The available paths are described in the :ref:`REST_API`, as well as the nature of return values depending on the kind of data that is fetched.
+        Path can be either the REST path e.g. ``"builders/2/builds/4"`` or tuple e.g. ``("builders", 2, "builds", 4)``.
+        The latter form being more convenient if some path parts are coming from variables.
+        The :ref:`Data_API` and :ref:`REST_API` are functionally equivalent except:
+
+        - :ref:`Data_API` does not have HTTP connection overhead.
+        - :ref:`Data_API` does not enforce authorization rules.
+
+        ``buildbot_api.dataGet`` is accessible via the WSGI application object passed to ``wsgi_dashboards`` plugin (as per the example).
+
+- That html code output of the server runs inside AngularJS application.
+
+  - It will use the CSS of the AngularJS application (including the Bootstrap_ CSS base).
+    You can use custom style-sheet with a standard ``style`` tag within your html.
+    Custom CSS will be shared with the whole Buildbot application once your dashboard is loaded.
+    So you should make sure your custom CSS rules only apply to your dashboard (e.g. by having a specific class for your dashboard's main div)
+
+  - It can use some of the AngularJS directives defined by Buildbot UI (currently only buildsummary is usable).
+  - It has full access to the application JS context.
+
+Here is an example of code that you can use in your ``master.cfg`` to create a simple dashboard:
+
+
+
+.. literalinclude:: mydashboard.py
+   :language: python
+
+
+Then you need a ``templates/mydashboard.html`` file near your ``master.cfg``.
+
+This template is a standard Jinja_ template which is the default templating engine of Flask_.
+
+.. literalinclude:: mydashboard.html
+   :language: guess
+
+
+.. _Flask: http://flask.pocoo.org/
+.. _Bottle: https://bottlepy.org/docs/dev/
+.. _Bootstrap: http://getbootstrap.com/css/
+.. _Jinja: http://jinja.pocoo.org/
+.. _python-requests: http://docs.python-requests.org/en/master/
+
 
 A Somewhat Whimsical Example (or "It's now customized, how do I deploy it?")
 ----------------------------------------------------------------------------
@@ -917,7 +1112,7 @@ Inclusion in the :file:`master.cfg` file
 The simplest technique is to simply put the step class definitions in your :file:`master.cfg` file, somewhere before the :class:`BuildFactory` definition where you actually use it in a clause like::
 
     f = BuildFactory()
-    f.addStep(SVN(svnurl="stuff"))
+    f.addStep(SVN(repourl="stuff"))
     f.addStep(Framboozle())
 
 Remember that :file:`master.cfg` is secretly just a Python program with one job: populating the :data:`BuildmasterConfig` dictionary.
@@ -928,7 +1123,7 @@ This is easy, and it keeps the point of definition very close to the point of us
 The downside is that every time you reload the config file, the Framboozle class will get redefined, which means that the buildmaster will think that you've reconfigured all the Builders that use it, even though nothing changed.
 Bleh.
 
-python file somewhere on the system
+Python file somewhere on the system
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Instead, we can put this code in a separate file, and import it into the master.cfg file just like we would the normal buildsteps like :bb:step:`ShellCommand` and :bb:step:`SVN`.
@@ -950,14 +1145,14 @@ Once we've done this, our :file:`master.cfg` can look like::
 
     from framboozle import Framboozle
     f = BuildFactory()
-    f.addStep(SVN(svnurl="stuff"))
+    f.addStep(SVN(repourl="stuff"))
     f.addStep(Framboozle())
 
 or::
 
     import framboozle
     f = BuildFactory()
-    f.addStep(SVN(svnurl="stuff"))
+    f.addStep(SVN(repourl="stuff"))
     f.addStep(framboozle.Framboozle())
 
 (check out the Python docs for details about how ``import`` and ``from A import B`` work).
@@ -997,7 +1192,7 @@ Find out what your Python's standard include path is by asking it:
      '/var/lib/python-support/python2.4',
      '/usr/lib/site-python']
 
-In this case, putting the code into /usr/local/lib/python2.4/site-packages/framboozle.py would work just fine.
+In this case, putting the code into :file:`/usr/local/lib/python2.4/site-packages/framboozle.py` would work just fine.
 We can use the same :file:`master.cfg` ``import framboozle`` statement as in Option 2.
 By putting it in a standard include directory (instead of the decidedly non-standard :file:`~/lib/python`), we don't even have to set :envvar:`PYTHONPATH` to anything special.
 The downside is that you probably have to be root to write to one of those standard include directories.
@@ -1028,14 +1223,14 @@ This file needs to be updated to include a pointer to your new step:
 Where:
 
 * ``buildbot.steps`` is the kind of plugin you offer (more information about possible kinds you can find in :doc:`../developer/plugins-publish`)
-* ``framboozle:Framboozle`` consists of two parts: ``framboozle`` is the name of the python module where to look for ``Framboozle`` class, which implements the plugin
+* ``framboozle:Framboozle`` consists of two parts: ``framboozle`` is the name of the Python module where to look for ``Framboozle`` class, which implements the plugin
 * ``Framboozle`` is the name of the plugin.
 
   This will allow users of your plugin to use it just like any other Buildbot plugins::
 
-    from buildbot.plugins.steps import *
+    from buildbot.plugins import steps
 
-    ... Framboozle ...
+    ... steps.Framboozle ...
 
 Now you can upload it to PyPI_ where other people can download it from and use in their build systems.
 Once again, the information about how to prepare and upload a package to PyPI_ can be found in tutorials listed in :doc:`../developer/plugins-publish`.
@@ -1050,12 +1245,12 @@ In either case, post a note about your patch to the mailing list, so others can 
 
 When it's committed to the master, the usage is the same as in the previous approach::
 
-    from buildbot.steps import Framboozle
+    from buildbot.plugins import steps, util
 
     ...
-    f = BuildFactory()
-    f.addStep(SVN(svnurl="stuff"))
-    f.addStep(Framboozle())
+    f = util.BuildFactory()
+    f.addStep(steps.SVN(repourl="stuff"))
+    f.addStep(steps.Framboozle())
     ...
 
 And then you don't even have to install :file:`framboozle.py` anywhere on your system, since it will ship with Buildbot.

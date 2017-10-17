@@ -14,6 +14,9 @@
 # Portions Copyright Buildbot Team Members
 # Portions Copyright Marius Rieder <marius.rieder@durchmesser.ch>
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 from buildbot.process import logobserver
 
 
@@ -25,7 +28,7 @@ class WEObserver(logobserver.LogLineObserver):
         self.errors = []
 
     def outLineReceived(self, line):
-        if 'W: ' in line:
+        if line.startswith('W: '):
             self.warnings.append(line)
-        elif 'E: ' in line:
+        elif line.startswith('E: '):
             self.errors.append(line)

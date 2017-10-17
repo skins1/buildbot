@@ -13,16 +13,21 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import textwrap
 
+from twisted.trial import unittest
+
 from buildbot.process.properties import Property
-from buildbot.status.results import FAILURE
-from buildbot.status.results import SUCCESS
-from buildbot.status.results import WARNINGS
+from buildbot.process.results import FAILURE
+from buildbot.process.results import SUCCESS
+from buildbot.process.results import WARNINGS
 from buildbot.steps import python_twisted
 from buildbot.test.fake.remotecommand import ExpectShell
 from buildbot.test.util import steps
-from twisted.trial import unittest
+
 
 failureLog = '''\
 buildbot.test.unit.test_steps_python_twisted.Trial.testProperties ... [FAILURE]
@@ -105,13 +110,12 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'},
                         env=dict(PYTHONPATH='somepath'))
             + ExpectShell.log('stdio', stdout="Ran 0 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['no tests', 'run'])
+        self.expectOutcome(result=SUCCESS, state_string='no tests run')
         return self.runStep()
 
     def test_run_env_supplement(self):
@@ -123,13 +127,12 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'},
                         env=dict(PYTHONPATH=['path1', 'path2', 'path3']))
             + ExpectShell.log('stdio', stdout="Ran 0 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['no tests', 'run'])
+        self.expectOutcome(result=SUCCESS, state_string='no tests run')
         return self.runStep()
 
     def test_run_env_nodupe(self):
@@ -141,13 +144,12 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'},
                         env=dict(PYTHONPATH=['path1', 'path2']))
             + ExpectShell.log('stdio', stdout="Ran 0 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['no tests', 'run'])
+        self.expectOutcome(result=SUCCESS, state_string='no tests run')
         return self.runStep()
 
     def test_run_singular(self):
@@ -158,12 +160,11 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'})
             + ExpectShell.log('stdio', stdout="Ran 1 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['1 test', 'passed'])
+        self.expectOutcome(result=SUCCESS, state_string='1 test passed')
         return self.runStep()
 
     def test_run_plural(self):
@@ -174,12 +175,11 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'})
             + ExpectShell.log('stdio', stdout="Ran 2 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['2 tests', 'passed'])
+        self.expectOutcome(result=SUCCESS, state_string='2 tests passed')
         return self.runStep()
 
     def test_run_failure(self):
@@ -190,13 +190,13 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'})
             + ExpectShell.log('stdio', stdout=failureLog)
             + 1
         )
-        self.expectOutcome(result=FAILURE, status_text=['tests', '8 failures'])
-        self.expectLogfile('problems', failureLog.split('\n\n', 1)[1])
+        self.expectOutcome(
+            result=FAILURE, state_string='tests 8 failures (failure)')
+        self.expectLogfile('problems', failureLog.split('\n\n', 1)[1][:-1])
         self.expectLogfile('warnings', textwrap.dedent('''\
                 buildbot.test.unit.test_steps_python_twisted.Trial.test_run_env_nodupe ... [FAILURE]/home/dustin/code/buildbot/t/buildbot/master/buildbot/test/fake/logfile.py:92: UserWarning: step uses removed LogFile method `getText`
                 buildbot.test.unit.test_steps_python_twisted.Trial.test_run_env_supplement ... [FAILURE]/home/dustin/code/buildbot/t/buildbot/master/buildbot/test/fake/logfile.py:92: UserWarning: step uses removed LogFile method `getText`
@@ -214,12 +214,11 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
         self.expectCommands(
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', 'testname'],
-                        usePTY="slave-config",
                         logfiles={'test.log': '_trial_temp/test.log'})
             + ExpectShell.log('stdio', stdout="Ran 2 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['2 tests', 'passed'])
+        self.expectOutcome(result=SUCCESS, state_string='2 tests passed')
         return self.runStep()
 
     def test_run_jobs(self):
@@ -237,7 +236,6 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', '--jobs=2',
                                  'testname'],
-                        usePTY="slave-config",
                         logfiles={
                             'test.0.log': '_trial_temp/0/test.log',
                             'err.0.log': '_trial_temp/0/err.log',
@@ -249,7 +247,7 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
             + ExpectShell.log('stdio', stdout="Ran 1 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['1 test', 'passed'])
+        self.expectOutcome(result=SUCCESS, state_string='1 test passed')
         return self.runStep()
 
     def test_run_jobsProperties(self):
@@ -266,7 +264,6 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
             ExpectShell(workdir='build',
                         command=['trial', '--reporter=bwverbose', '--jobs=2',
                                  'testname'],
-                        usePTY="slave-config",
                         logfiles={
                             'test.0.log': '_trial_temp/0/test.log',
                             'err.0.log': '_trial_temp/0/err.log',
@@ -278,7 +275,7 @@ class Trial(steps.BuildStepMixin, unittest.TestCase):
             + ExpectShell.log('stdio', stdout="Ran 1 tests\n")
             + 0
         )
-        self.expectOutcome(result=SUCCESS, status_text=['1 test', 'passed'])
+        self.expectOutcome(result=SUCCESS, state_string='1 test passed')
         return self.runStep()
 
 
@@ -295,13 +292,15 @@ class HLint(steps.BuildStepMixin, unittest.TestCase):
                        buildFiles=['foo.xhtml'])
         self.expectCommands(
             ExpectShell(workdir='build',
-                        command=['bin/lore', '-p', '--output', 'lint', 'foo.xhtml'],
-                        usePTY="slave-config")
-            + ExpectShell.log('stdio', stdout="dunno what hlint output looks like..\n")
+                        command=[
+                            'bin/lore', '-p', '--output', 'lint', 'foo.xhtml'],)
+            +
+            ExpectShell.log(
+                'stdio', stdout="dunno what hlint output looks like..\n")
             + 0
         )
         self.expectLogfile('files', 'foo.xhtml\n')
-        self.expectOutcome(result=SUCCESS, status_text=['hlint'])
+        self.expectOutcome(result=SUCCESS, state_string='hlint')
         return self.runStep()
 
     def test_run_warnings(self):
@@ -309,11 +308,11 @@ class HLint(steps.BuildStepMixin, unittest.TestCase):
                        buildFiles=['foo.xhtml'])
         self.expectCommands(
             ExpectShell(workdir='build',
-                        command=['bin/lore', '-p', '--output', 'lint', 'foo.xhtml'],
-                        usePTY="slave-config")
+                        command=[
+                            'bin/lore', '-p', '--output', 'lint', 'foo.xhtml'])
             + ExpectShell.log('stdio', stdout="colon: meaning warning\n")
             + 0
         )
         self.expectLogfile('warnings', 'colon: meaning warning')
-        self.expectOutcome(result=WARNINGS, status_text=['hlint', 'warnings'])
+        self.expectOutcome(result=WARNINGS, state_string='hlint (warnings)')
         return self.runStep()

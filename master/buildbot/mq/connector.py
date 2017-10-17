@@ -13,24 +13,30 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import config
-from buildbot.util import service
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.python.reflect import namedObject
 
+from buildbot.util import service
 
-class MQConnector(config.ReconfigurableServiceMixin, service.AsyncMultiService):
+
+class MQConnector(service.ReconfigurableServiceMixin, service.AsyncMultiService):
 
     classes = {
         'simple': {
             'class': "buildbot.mq.simple.SimpleMQ",
             'keys': set(['debug']),
         },
+        'wamp': {
+            'class': "buildbot.mq.wamp.WampMQ",
+            'keys': set(["router_url", "realm", "wamp_debug_level"]),
+        },
     }
+    name = 'mq'
 
-    def __init__(self, master):
+    def __init__(self):
         service.AsyncMultiService.__init__(self)
-        self.setName('mq')
-        self.master = master
         self.impl = None  # set in setup
         self.impl_type = None  # set in setup
 
@@ -43,24 +49,25 @@ class MQConnector(config.ReconfigurableServiceMixin, service.AsyncMultiService):
         assert typ in self.classes  # this is checked by MasterConfig
         self.impl_type = typ
         cls = namedObject(self.classes[typ]['class'])
-        self.impl = cls(self.master)
+        self.impl = cls()
 
         # set up the impl as a child service
         self.impl.setServiceParent(self)
 
         # configure it (early)
-        self.impl.reconfigService(self.master.config)
+        self.impl.reconfigServiceWithBuildbotConfig(self.master.config)
 
         # copy the methods onto this object for ease of access
         self.produce = self.impl.produce
         self.startConsuming = self.impl.startConsuming
+        self.waitUntilEvent = self.impl.waitUntilEvent
 
-    def reconfigService(self, new_config):
+    def reconfigServiceWithBuildbotConfig(self, new_config):
         # double-check -- the master ensures this in config checks
         assert self.impl_type == new_config.mq['type']
 
-        return config.ReconfigurableServiceMixin.reconfigService(self,
-                                                                 new_config)
+        return service.ReconfigurableServiceMixin.reconfigServiceWithBuildbotConfig(self,
+                                                                                    new_config)
 
     def produce(self, routing_key, data):
         # will be patched after configuration to point to the running

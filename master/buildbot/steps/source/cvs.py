@@ -13,19 +13,22 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import re
 import time
-
 from email.utils import formatdate
 
 from twisted.internet import defer
 from twisted.internet import reactor
 from twisted.python import log
 
-from buildbot.interfaces import BuildSlaveTooOldError
+from buildbot.interfaces import WorkerTooOldError
 from buildbot.process import buildstep
 from buildbot.process import remotecommand
-from buildbot.steps.shell import StringFileWriter
+from buildbot.process.remotetransfer import StringFileWriter
 from buildbot.steps.source.base import Source
 
 
@@ -36,18 +39,26 @@ class CVS(Source):
     renderables = ["cvsroot"]
 
     def __init__(self, cvsroot=None, cvsmodule='', mode='incremental',
-                 method=None, branch=None, global_options=[], extra_options=[],
+                 method=None, branch=None, global_options=None, extra_options=None,
                  login=None, **kwargs):
 
         self.cvsroot = cvsroot
         self.cvsmodule = cvsmodule
         self.branch = branch
+        if global_options is None:
+            global_options = []
         self.global_options = global_options
+        if extra_options is None:
+            extra_options = []
         self.extra_options = extra_options
         self.login = login
         self.mode = mode
         self.method = method
         self.srcdir = 'source'
+
+        if not self._hasAttrGroupMember('mode', self.mode):
+            raise ValueError("mode %s is not one of %s" %
+                             (self.mode, self._listAttrGroupMembers('mode')))
         Source.__init__(self, **kwargs)
 
     def startVC(self, branch, revision, patch):
@@ -57,25 +68,21 @@ class CVS(Source):
         self.method = self._getMethod()
         d = self.checkCvs()
 
+        @d.addCallback
         def checkInstall(cvsInstalled):
             if not cvsInstalled:
-                raise BuildSlaveTooOldError("CVS is not installed on slave")
+                raise WorkerTooOldError("CVS is not installed on worker")
             return 0
-        d.addCallback(checkInstall)
         d.addCallback(self.checkLogin)
 
         d.addCallback(lambda _: self.sourcedirIsPatched())
 
+        @d.addCallback
         def checkPatched(patched):
             if patched:
                 return self.purge(False)
-            else:
-                return 0
-        d.addCallback(checkPatched)
-        if self.mode == 'incremental':
-            d.addCallback(lambda _: self.incremental())
-        elif self.mode == 'full':
-            d.addCallback(lambda _: self.full())
+            return 0
+        d.addCallback(self._getAttrGroupMember('mode', self.mode))
 
         if patch:
             d.addCallback(self.patch, patch)
@@ -85,7 +92,7 @@ class CVS(Source):
         return d
 
     @defer.inlineCallbacks
-    def incremental(self):
+    def mode_incremental(self, _):
         updatable = yield self._sourcedirIsUpdatable()
         if updatable:
             rv = yield self.doUpdate()
@@ -94,7 +101,7 @@ class CVS(Source):
         defer.returnValue(rv)
 
     @defer.inlineCallbacks
-    def full(self):
+    def mode_full(self, _):
         if self.method == 'clobber':
             rv = yield self.clobber()
             defer.returnValue(rv)
@@ -124,11 +131,11 @@ class CVS(Source):
         cmd.useLog(self.stdio_log, False)
         d = self.runCommand(cmd)
 
+        @d.addCallback
         def checkRemoval(res):
-            if res != 0:
+            if cmd.rc:
                 raise RuntimeError("Failed to delete directory")
-            return res
-        d.addCallback(lambda _: checkRemoval(cmd.rc))
+            return cmd.rc
         return d
 
     def clobber(self):
@@ -154,8 +161,9 @@ class CVS(Source):
         d = self.runCommand(cmd)
         old_workdir = self.workdir
         self.workdir = self.srcdir
-        d.addCallback(lambda _: self.incremental())
+        d.addCallback(self.mode_incremental)
 
+        @d.addCallback
         def copy(_):
             cmd = remotecommand.RemoteCommand('cpdir', {
                 'fromdir': self.srcdir,
@@ -165,12 +173,11 @@ class CVS(Source):
             cmd.useLog(self.stdio_log, False)
             d = self.runCommand(cmd)
             return d
-        d.addCallback(copy)
 
+        @d.addCallback
         def resetWorkdir(_):
             self.workdir = old_workdir
             return 0
-        d.addCallback(resetWorkdir)
         return d
 
     def purge(self, ignore_ignores):
@@ -184,11 +191,11 @@ class CVS(Source):
         cmd.useLog(self.stdio_log, False)
         d = self.runCommand(cmd)
 
+        @d.addCallback
         def evaluate(cmd):
             if cmd.didFail():
                 raise buildstep.BuildStepFailed()
             return cmd.rc
-        d.addCallback(evaluate)
         return d
 
     def doCheckout(self, dir):
@@ -240,46 +247,43 @@ class CVS(Source):
     def finish(self, res):
         d = defer.succeed(res)
 
+        @d.addCallback
         def _gotResults(results):
             self.setStatus(self.cmd, results)
             return results
-        d.addCallback(_gotResults)
         d.addCallback(self.finished)
         return d
 
     def checkLogin(self, _):
         if self.login:
-            d = defer.succeed(0)
+            d = self._dovccmd(['-d', self.cvsroot, 'login'],
+                              initialStdin=self.login + "\n")
         else:
-            d = self._dovccmd(['-d', self.cvsroot, 'login'])
-
-            def setLogin(res):
-                # this happens only if the login command succeeds.
-                self.login = True
-                return res
-            d.addCallback(setLogin)
+            d = defer.succeed(0)
 
         return d
 
-    def _dovccmd(self, command, workdir=None, abandonOnFailure=True):
+    def _dovccmd(self, command, workdir=None, abandonOnFailure=True,
+                 initialStdin=None):
         if workdir is None:
             workdir = self.workdir
         if not command:
             raise ValueError("No command specified")
-        cmd = remotecommand.RemoteShellCommand(workdir, ['cvs'] +
-                                               command,
+        cmd = remotecommand.RemoteShellCommand(workdir,
+                                               ['cvs'] + command,
                                                env=self.env,
                                                timeout=self.timeout,
-                                               logEnviron=self.logEnviron)
+                                               logEnviron=self.logEnviron,
+                                               initialStdin=initialStdin)
         cmd.useLog(self.stdio_log, False)
         d = self.runCommand(cmd)
 
-        def evaluateCommand(cmd):
+        @d.addCallback
+        def evaluateCommand(_):
             if cmd.rc != 0 and abandonOnFailure:
                 log.msg("Source step failed while running command %s" % cmd)
                 raise buildstep.BuildStepFailed()
             return cmd.rc
-        d.addCallback(lambda _: evaluateCommand(cmd))
         return d
 
     def _cvsEntriesContainStickyDates(self, entries):
@@ -302,8 +306,16 @@ class CVS(Source):
             'blocksize': 32 * 1024,
         }
 
+        def uploadFileArgs(source):
+            full_args = dict(args)
+            if self.workerVersionIsOlderThan('uploadFile', '3.0'):
+                full_args['slavesrc'] = source
+            else:
+                full_args['workersrc'] = source
+            return full_args
+
         cmd = remotecommand.RemoteCommand('uploadFile',
-                                          dict(slavesrc='Root', **args),
+                                          uploadFileArgs('Root'),
                                           ignore_updates=True)
         yield self.runCommand(cmd)
         if cmd.rc is not None and cmd.rc != 0:
@@ -321,7 +333,7 @@ class CVS(Source):
 
         myFileWriter.buffer = ""
         cmd = remotecommand.RemoteCommand('uploadFile',
-                                          dict(slavesrc='Repository', **args),
+                                          uploadFileArgs('Repository'),
                                           ignore_updates=True)
         yield self.runCommand(cmd)
         if cmd.rc is not None and cmd.rc != 0:
@@ -335,7 +347,7 @@ class CVS(Source):
         # we can't update (unless we remove those tags with cvs update -A)
         myFileWriter.buffer = ""
         cmd = buildstep.RemoteCommand('uploadFile',
-                                      dict(slavesrc='Entries', **args),
+                                      uploadFileArgs('Entries'),
                                       ignore_updates=True)
         yield self.runCommand(cmd)
         if cmd.rc is not None and cmd.rc != 0:
@@ -354,11 +366,9 @@ class CVS(Source):
     def checkCvs(self):
         d = self._dovccmd(['--version'])
 
+        @d.addCallback
         def check(res):
-            if res == 0:
-                return True
-            return False
-        d.addCallback(check)
+            return res == 0
         return d
 
     def _getMethod(self):

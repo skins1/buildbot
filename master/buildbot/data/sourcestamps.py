@@ -13,10 +13,14 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.internet import defer
+
 from buildbot.data import base
 from buildbot.data import patches
 from buildbot.data import types
-from twisted.internet import defer
 
 
 def _db2data(ss):
@@ -68,10 +72,6 @@ class SourceStampsEndpoint(base.Endpoint):
     def get(self, resultSpec, kwargs):
         defer.returnValue([_db2data(ssdict) for ssdict in
                            (yield self.master.db.sourcestamps.getSourceStamps())])
-
-    def startConsuming(self, callback, options, kwargs):
-        return self.master.mq.startConsuming(callback,
-                                             ('sourcestamps', None, None))
 
 
 class SourceStamp(base.ResourceType):

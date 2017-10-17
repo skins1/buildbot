@@ -13,12 +13,10 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import re
-
-from zope.interface import implements
-
-from buildbot.util import config
-from buildbot.www import resource
 
 from twisted.cred.checkers import FilePasswordDB
 from twisted.cred.checkers import InMemoryUsernamePasswordDatabaseDontUse
@@ -30,15 +28,21 @@ from twisted.web.guard import BasicCredentialFactory
 from twisted.web.guard import DigestCredentialFactory
 from twisted.web.guard import HTTPAuthSessionWrapper
 from twisted.web.resource import IResource
+from zope.interface import implementer
+
+from buildbot.util import bytes2NativeString
+from buildbot.util import config
+from buildbot.util import unicode2bytes
+from buildbot.www import resource
 
 
 class AuthRootResource(resource.Resource):
 
     def getChild(self, path, request):
         # return dynamically generated resources
-        if path == 'login':
+        if path == b'login':
             return self.master.www.auth.getLoginResource()
-        elif path == 'logout':
+        elif path == b'logout':
             return self.master.www.auth.getLogoutResource()
         return resource.Resource.getChild(self, path, request)
 
@@ -46,8 +50,6 @@ class AuthRootResource(resource.Resource):
 class AuthBase(config.ConfiguredMixin):
 
     def __init__(self, userInfoProvider=None):
-        if userInfoProvider is None:
-            userInfoProvider = UserInfoProviderBase()
         self.userInfoProvider = userInfoProvider
 
     def reconfigAuth(self, master, new_config):
@@ -57,7 +59,7 @@ class AuthBase(config.ConfiguredMixin):
         return defer.succeed(None)
 
     def getLoginResource(self):
-        raise Error(501, "not implemented")
+        raise Error(501, b"not implemented")
 
     def getLogoutResource(self):
         return LogoutResource(self.master)
@@ -68,6 +70,7 @@ class AuthBase(config.ConfiguredMixin):
         if self.userInfoProvider is not None:
             infos = yield self.userInfoProvider.getUserInfo(session.user_info['username'])
             session.user_info.update(infos)
+            session.updateSession(request)
 
     def getConfigDict(self):
         return {'name': type(self).__name__}
@@ -95,11 +98,13 @@ class NoAuth(AuthBase):
 
 
 class RemoteUserAuth(AuthBase):
-    header = "REMOTE_USER"
-    headerRegex = re.compile(r"(?P<username>[^ @]+)@(?P<realm>[^ @]+)")
+    header = b"REMOTE_USER"
+    headerRegex = re.compile(br"(?P<username>[^ @]+)@(?P<realm>[^ @]+)")
 
     def __init__(self, header=None, headerRegex=None, **kwargs):
         AuthBase.__init__(self, **kwargs)
+        if self.userInfoProvider is None:
+            self.userInfoProvider = UserInfoProviderBase()
         if header is not None:
             self.header = header
         if headerRegex is not None:
@@ -109,21 +114,19 @@ class RemoteUserAuth(AuthBase):
     def maybeAutoLogin(self, request):
         header = request.getHeader(self.header)
         if header is None:
-            raise Error(403, "missing http header %s. Check your reverse proxy config!" % (
-                             self.header))
+            raise Error(403, b"missing http header " + self.header + b". Check your reverse proxy config!")
         res = self.headerRegex.match(header)
         if res is None:
             raise Error(
-                403, 'http header does not match regex! "%s" not matching %s' %
-                (header, self.headerRegex.pattern))
+                403, b'http header does not match regex! "' + header + b'" not matching ' + self.headerRegex.pattern)
         session = request.getSession()
-        if not hasattr(session, "user_info"):
+        if session.user_info != dict(res.groupdict()):
             session.user_info = dict(res.groupdict())
             yield self.updateUserInfo(request)
 
 
+@implementer(IRealm)
 class AuthRealm(object):
-    implements(IRealm)
 
     def __init__(self, master, auth):
         self.auth = auth
@@ -141,6 +144,8 @@ class TwistedICredAuthBase(AuthBase):
 
     def __init__(self, credentialFactories, checkers, **kwargs):
         AuthBase.__init__(self, **kwargs)
+        if self.userInfoProvider is None:
+            self.userInfoProvider = UserInfoProviderBase()
         self.credentialFactories = credentialFactories
         self.checkers = checkers
 
@@ -155,8 +160,8 @@ class HTPasswdAuth(TwistedICredAuthBase):
     def __init__(self, passwdFile, **kwargs):
         TwistedICredAuthBase.__init__(
             self,
-            [DigestCredentialFactory("md5", "buildbot"),
-             BasicCredentialFactory("buildbot")],
+            [DigestCredentialFactory(b"md5", b"buildbot"),
+             BasicCredentialFactory(b"buildbot")],
             [FilePasswordDB(passwdFile)],
             **kwargs)
 
@@ -164,12 +169,21 @@ class HTPasswdAuth(TwistedICredAuthBase):
 class UserPasswordAuth(TwistedICredAuthBase):
 
     def __init__(self, users, **kwargs):
+        if isinstance(users, dict):
+            users = {user: unicode2bytes(pw) for user, pw in users.items()}
+        elif isinstance(users, list):
+            users = [(user, unicode2bytes(pw)) for user, pw in users]
         TwistedICredAuthBase.__init__(
             self,
-            [DigestCredentialFactory("md5", "buildbot"),
-             BasicCredentialFactory("buildbot")],
+            [DigestCredentialFactory(b"md5", b"buildbot"),
+             BasicCredentialFactory(b"buildbot")],
             [InMemoryUsernamePasswordDatabaseDontUse(**dict(users))],
             **kwargs)
+
+
+def _redirect(master, request):
+    url = request.args.get("redirect", ["/"])[0]
+    return resource.Redirect(master.config.buildbotURL + "#" + url)
 
 
 class PreAuthenticatedLoginResource(LoginResource):
@@ -183,8 +197,9 @@ class PreAuthenticatedLoginResource(LoginResource):
     @defer.inlineCallbacks
     def renderLogin(self, request):
         session = request.getSession()
-        session.user_info = dict(username=self.username)
+        session.user_info = dict(username=bytes2NativeString(self.username))
         yield self.master.www.auth.updateUserInfo(request)
+        raise _redirect(self.master, request)
 
 
 class LogoutResource(resource.Resource):
@@ -192,4 +207,6 @@ class LogoutResource(resource.Resource):
     def render_GET(self, request):
         session = request.getSession()
         session.expire()
-        return ""
+        session.updateSession(request)
+        request.redirect(_redirect(self.master, request).url)
+        return b''

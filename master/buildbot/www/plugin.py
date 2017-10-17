@@ -13,18 +13,34 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import pkg_resources
 
 from twisted.web import static
 
+from buildbot.util import bytes2NativeString
+
 
 class Application(object):
+
     def __init__(self, modulename, description):
         self.description = description
-        self.version = pkg_resources.resource_string(modulename, "/VERSION").strip()
-        self.static_dir = pkg_resources.resource_filename(modulename, "/static")
+        self.version = pkg_resources.resource_string(
+            modulename, "/VERSION").strip()
+        self.version = bytes2NativeString(self.version)
+        self.static_dir = pkg_resources.resource_filename(
+            modulename, "/static")
         self.resource = static.File(self.static_dir)
 
+    def setMaster(self, master):
+        self.master = master
+
+    def setConfiguration(self, config):
+        self.config = config
+
     def __repr__(self):
-        return "www.plugin.Application(version={}, description={}, static_dir={})".format(
-            self.version, self.description, self.static_dir)
+        return ("www.plugin.Application(version=%(version)s, "
+                "description=%(description)s, "
+                "static_dir=%(static_dir)s)") % self.__dict__

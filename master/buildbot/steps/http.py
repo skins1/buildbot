@@ -13,21 +13,25 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import config
-from buildbot.process.buildstep import BuildStep
-from buildbot.process.buildstep import FAILURE
-from buildbot.process.buildstep import SUCCESS
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import iteritems
+
 from twisted.internet import defer
 from twisted.internet import reactor
+
+from buildbot import config
+from buildbot.process.buildstep import FAILURE
+from buildbot.process.buildstep import SUCCESS
+from buildbot.process.buildstep import BuildStep
 
 # use the 'requests' lib: http://python-requests.org
 try:
     import txrequests
-    assert txrequests
     import requests
-    assert requests
 except ImportError:
-    txrequests = requests = None
+    txrequests = None
+
 
 # This step uses a global Session object, which encapsulates a thread pool as
 # well as state such as cookies and authentication.  This state may pose
@@ -62,65 +66,76 @@ class HTTPStep(BuildStep):
     name = 'HTTPStep'
     description = 'Requesting'
     descriptionDone = 'Requested'
-    requestsParams = ["method", "url", "params", "data", "headers",
+    requestsParams = ["params", "data", "json", "headers",
                       "cookies", "files", "auth",
                       "timeout", "allow_redirects", "proxies",
                       "hooks", "stream", "verify", "cert"]
-    renderables = requestsParams
+    renderables = requestsParams + ["method", "url"]
     session = None
 
-    def __init__(self, url, method, description=None, descriptionDone=None, **kwargs):
-        if txrequests is None or requests is None:
-            config.error("Need to install txrequest to use this step:\n\n pip install txrequests")
-        self.method = method
-        self.url = url
-        self.requestkwargs = {'method': method, 'url': url}
-        for p in HTTPStep.requestsParams:
-            v = kwargs.pop(p, None)
-            self.__dict__[p] = v
+    def __init__(self, url, method, **kwargs):
+        if txrequests is None:
+            config.error(
+                "Need to install txrequest to use this step:\n\n pip install txrequests")
+
         if method not in ('POST', 'GET', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'):
             config.error("Wrong method given: '%s' is not known" % method)
-        if description is not None:
-            self.description = description
-        if descriptionDone is not None:
-            self.descriptionDone = descriptionDone
+
+        self.method = method
+        self.url = url
+
+        for param in HTTPStep.requestsParams:
+            setattr(self, param, kwargs.pop(param, None))
+
         BuildStep.__init__(self, **kwargs)
 
     def start(self):
-        self.doRequest()
+        d = self.doRequest()
+        d.addErrback(self.failed)
 
     @defer.inlineCallbacks
     def doRequest(self):
         # create a new session if it doesn't exist
         self.session = getSession()
 
-        for p in self.__dict__ and self.requestsParams:
-            v = self.__dict__[p]
-            if v is not None:
-                self.requestkwargs[p] = v
+        requestkwargs = {
+            'method': self.method,
+            'url': self.url
+        }
+
+        for param in self.requestsParams:
+            value = getattr(self, param, None)
+            if value is not None:
+                requestkwargs[param] = value
 
         log = self.addLog('log')
 
         # known methods already tested in __init__
 
-        log.addHeader('Performing %s request to %s\n' % (self.method, self.url))
+        log.addHeader('Performing %s request to %s\n' %
+                      (self.method, self.url))
         if self.params:
             log.addHeader('Parameters:\n')
-            for k, v in self.requestkwargs.get("params", {}).iteritems():
+            params = requestkwargs.get("params", {})
+            if params:
+                params = sorted(iteritems(params), key=lambda x: x[0])
+                requestkwargs['params'] = params
+            for k, v in params:
                 log.addHeader('\t%s: %s\n' % (k, v))
-        data = self.requestkwargs.get("data", None)
+        data = requestkwargs.get("data", None)
         if data:
             log.addHeader('Data:\n')
             if isinstance(data, dict):
-                for k, v in data.iteritems():
+                for k, v in iteritems(data):
                     log.addHeader('\t%s: %s\n' % (k, v))
             else:
                 log.addHeader('\t%s\n' % data)
 
         try:
-            r = yield self.session.request(**self.requestkwargs)
-        except requests.exceptions.ConnectionError, e:
-            log.addStderr('An exception occured while performing the request: %s' % e)
+            r = yield self.session.request(**requestkwargs)
+        except requests.exceptions.ConnectionError as e:
+            log.addStderr(
+                'An exception occured while performing the request: %s' % e)
             self.finished(FAILURE)
             return
 
@@ -134,8 +149,7 @@ class HTTPStep(BuildStep):
 
         log.finish()
 
-        self.descriptionDone = "Status code: %d" % r.status_code
-        self.step_status.setText(self.describe(done=True))
+        self.descriptionDone = ["Status code: %d" % r.status_code]
         if (r.status_code < 400):
             self.finished(SUCCESS)
         else:
@@ -145,7 +159,7 @@ class HTTPStep(BuildStep):
         log = self.getLog('log')
 
         log.addHeader('Request Header:\n')
-        for k, v in response.request.headers.iteritems():
+        for k, v in iteritems(response.request.headers):
             log.addHeader('\t%s: %s\n' % (k, v))
 
         log.addStdout('URL: %s\n' % response.url)
@@ -156,16 +170,11 @@ class HTTPStep(BuildStep):
             log.addStderr('Status: %s\n' % response.status_code)
 
         log.addHeader('Response Header:\n')
-        for k, v in response.headers.iteritems():
+        for k, v in iteritems(response.headers):
             log.addHeader('\t%s: %s\n' % (k, v))
 
         log.addStdout(' ------ Content ------\n%s' % response.text)
         self.addLog('content').addStdout(response.text)
-
-    def describe(self, done=False):
-        if done:
-            return self.descriptionDone.split()
-        return self.description.split()
 
 
 class POST(HTTPStep):

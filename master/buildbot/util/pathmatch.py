@@ -13,6 +13,10 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import iteritems
+
 import re
 
 _ident_re = re.compile('^[a-zA-Z_-][.a-zA-Z0-9_-]*$')
@@ -73,10 +77,10 @@ class Matcher(object):
             raise KeyError('No match for %r' % (path,))
 
     def iterPatterns(self):
-        return self._patterns.iteritems()
+        return list(iteritems(self._patterns))
 
     def _compile(self):
         self._by_length = {}
         for k, v in self.iterPatterns():
-            l = len(k)
-            self._by_length.setdefault(l, {})[k] = v
+            length = len(k)
+            self._by_length.setdefault(length, {})[k] = v

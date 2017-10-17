@@ -13,21 +13,29 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import config
-from buildbot.schedulers import timed
-from buildbot.test.util import scheduler
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.internet import task
 from twisted.trial import unittest
+
+from buildbot import config
+from buildbot.schedulers import timed
+from buildbot.test.util import scheduler
 
 
 class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
 
     OBJECTID = 23
+    SCHEDULERID = 3
+
+    def setUp(self):
+        self.setUpScheduler()
 
     def makeScheduler(self, firstBuildDuration=0, exp_branch=None, **kwargs):
         self.sched = sched = timed.Periodic(**kwargs)
-        self.attachScheduler(self.sched, self.OBJECTID)
+        self.attachScheduler(self.sched, self.OBJECTID, self.SCHEDULERID)
 
         # add a Clock to help checking timing issues
         self.clock = sched._reactor = task.Clock()
@@ -35,18 +43,19 @@ class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
         # keep track of builds in self.events
         self.events = []
 
-        def addBuildsetForLatest(reason=None, branch=None):
+        def addBuildsetForSourceStampsWithDefaults(reason, sourcestamps,
+                                                   waited_for=False, properties=None, builderNames=None,
+                                                   **kw):
             self.assertIn('Periodic scheduler named', reason)
-            self.assertEqual(branch, exp_branch)
+            # TODO: check branch
             isFirst = (self.events == [])
             self.events.append('B@%d' % self.clock.seconds())
             if isFirst and firstBuildDuration:
                 d = defer.Deferred()
                 self.clock.callLater(firstBuildDuration, d.callback, None)
                 return d
-            else:
-                return defer.succeed(None)
-        sched.addBuildsetForLatest = addBuildsetForLatest
+            return defer.succeed(None)
+        sched.addBuildsetForSourceStampsWithDefaults = addBuildsetForSourceStampsWithDefaults
 
         # handle state locally
         self.state = {}
@@ -70,11 +79,14 @@ class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
                                                  periodicBuildTimer=-2))
 
     def test_constructor_no_reason(self):
-        sched = self.makeScheduler(name='test', builderNames=['test'], periodicBuildTimer=10)
-        self.assertEqual(sched.reason, "The Periodic scheduler named 'test' triggered this build")
+        sched = self.makeScheduler(
+            name='test', builderNames=['test'], periodicBuildTimer=10)
+        self.assertEqual(
+            sched.reason, "The Periodic scheduler named 'test' triggered this build")
 
     def test_constructor_reason(self):
-        sched = self.makeScheduler(name='test', builderNames=['test'], periodicBuildTimer=10, reason="periodic")
+        sched = self.makeScheduler(
+            name='test', builderNames=['test'], periodicBuildTimer=10, reason="periodic")
         self.assertEqual(sched.reason, "periodic")
 
     def test_iterations_simple(self):
@@ -131,7 +143,8 @@ class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
         self.clock.advance(3)  # get partway into that build
 
         d = sched.deactivate()  # begin stopping the service
-        d.addCallback(lambda _: self.events.append('STOP@%d' % self.clock.seconds()))
+        d.addCallback(
+            lambda _: self.events.append('STOP@%d' % self.clock.seconds()))
 
         # run the clock out
         while self.clock.seconds() < 40:
@@ -147,7 +160,8 @@ class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
     def test_iterations_with_initial_state(self):
         sched = self.makeScheduler(name='test', builderNames=['test'],
                                    periodicBuildTimer=13)
-        self.state['last_build'] = self.clock.seconds() - 7  # so next build should start in 6s
+        # so next build should start in 6s
+        self.state['last_build'] = self.clock.seconds() - 7
 
         sched.activate()
         self.clock.advance(0)  # let it trigger the first build
@@ -175,14 +189,40 @@ class Periodic(scheduler.SchedulerMixin, unittest.TestCase):
         d.addCallback(lambda t: self.assertEqual(t, 33))
         return d
 
-    def test_getPendingBuildTimes(self):
+    @defer.inlineCallbacks
+    def test_enabled_callback(self):
         sched = self.makeScheduler(name='test', builderNames=['test'],
                                    periodicBuildTimer=13)
-        self.state['last_build'] = self.clock.seconds() - 10  # so next build should start in 3s
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
 
-        sched.activate()
-        self.clock.advance(0)  # let it schedule the first build
-        self.assertEqual(sched.getPendingBuildTimes(), [3.0])
+    @defer.inlineCallbacks
+    def test_disabled_activate(self):
+        sched = self.makeScheduler(name='test', builderNames=['test'],
+                                   periodicBuildTimer=13)
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.activate()
+        self.assertEqual(r, None)
 
-        d = sched.deactivate()
-        return d
+    @defer.inlineCallbacks
+    def test_disabled_deactivate(self):
+        sched = self.makeScheduler(name='test', builderNames=['test'],
+                                   periodicBuildTimer=13)
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.deactivate()
+        self.assertEqual(r, None)
+
+    @defer.inlineCallbacks
+    def test_disabled_start_build(self):
+        sched = self.makeScheduler(name='test', builderNames=['test'],
+                                   periodicBuildTimer=13)
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.startBuild()
+        self.assertEqual(r, None)

@@ -3,28 +3,26 @@ class State extends Config
         $stateProvider.state "builder.forcebuilder",
             url: "/force/:scheduler",
             ### @ngInject ###
-            onEnter: ($stateParams, $state, $modal, buildbotService) ->
-                scheduler = buildbotService.one('forceschedulers', $stateParams.scheduler)
-                scheduler.get().then (scheduler_data) ->
-                    modal = {}
-                    modal.modal = $modal.open
-                        templateUrl: "views/forcedialog.html"
-                        controller: 'forceDialogController'
-                        resolve:
-                            builderid: -> $stateParams.builder
-                            scheduler: -> scheduler
-                            scheduler_data: -> scheduler_data
-                            modal: -> modal
+            onEnter: ($stateParams, $state, $uibModal) ->
+                modal = {}
+                modal.modal = $uibModal.open
+                    templateUrl: "views/forcedialog.html"
+                    controller: 'forceDialogController'
+                    windowClass: 'modal-xlg'
+                    resolve:
+                        builderid: -> $stateParams.builder
+                        schedulerid: -> $stateParams.scheduler
+                        modal: -> modal
 
-                    # We exit the state if the dialog is closed or dismissed
-                    goBuild = (result) ->
-                        [ buildsetid, brids ] = result
-                        buildernames = _.keys(brids)
-                        if buildernames.length == 1
-                            $state.go "buildrequest",
-                                buildrequest: brids[buildernames[0]]
-                                redirect_to_build: true
-                    goUp = (result) ->
-                        $state.go "^",
+                # We exit the state if the dialog is closed or dismissed
+                goBuild = (result) ->
+                    [ buildsetid, brids ] = result
+                    buildernames = _.keys(brids)
+                    if buildernames.length == 1
+                        $state.go "buildrequest",
+                            buildrequest: brids[buildernames[0]]
+                            redirect_to_build: true
+                goUp = (result) ->
+                    $state.go "^",
 
-                    modal.modal.result.then(goBuild, goUp)
+                modal.modal.result.then(goBuild, goUp)

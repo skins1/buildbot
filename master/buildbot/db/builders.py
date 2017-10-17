@@ -13,22 +13,64 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import sqlalchemy as sa
+
+from twisted.internet import defer
 
 from buildbot.db import base
 
 
 class BuildersConnectorComponent(base.DBConnectorComponent):
 
-    def findBuilderId(self, name):
+    def findBuilderId(self, name, autoCreate=True):
         tbl = self.db.model.builders
+        name_hash = self.hashColumns(name)
         return self.findSomethingId(
             tbl=tbl,
-            whereclause=(tbl.c.name == name),
+            whereclause=(tbl.c.name_hash == name_hash),
             insert_values=dict(
                 name=name,
-                name_hash=self.hashColumns(name),
-            ))
+                name_hash=name_hash,
+            ), autoCreate=autoCreate)
+
+    @defer.inlineCallbacks
+    def updateBuilderInfo(self, builderid, description, tags):
+        # convert to tag IDs first, as necessary
+        def toTagid(tag):
+            if isinstance(tag, type(1)):
+                return defer.succeed(tag)
+            ssConnector = self.master.db.tags
+            return ssConnector.findTagId(tag)
+
+        tagsids = [r[1] for r in (yield defer.DeferredList(
+            [toTagid(tag) for tag in tags],
+            fireOnOneErrback=True,
+            consumeErrors=True))]
+
+        def thd(conn):
+            builders_tbl = self.db.model.builders
+            builders_tags_tbl = self.db.model.builders_tags
+            transaction = conn.begin()
+
+            q = builders_tbl.update(
+                whereclause=(builders_tbl.c.id == builderid))
+            conn.execute(q, description=description).close()
+            # remove previous builders_tags
+            conn.execute(builders_tags_tbl.delete(
+                whereclause=((builders_tags_tbl.c.builderid == builderid)))).close()
+
+            # add tag ids
+            if tagsids:
+                conn.execute(builders_tags_tbl.insert(),
+                             [dict(builderid=builderid, tagid=tagid)
+                              for tagid in tagsids]).close()
+
+            transaction.commit()
+
+        defer.returnValue((yield self.db.pool.do(thd)))
 
     def getBuilder(self, builderid):
         d = self.getBuilders(_builderid=builderid)
@@ -37,8 +79,7 @@ class BuildersConnectorComponent(base.DBConnectorComponent):
         def first(bldrs):
             if bldrs:
                 return bldrs[0]
-            else:
-                return None
+            return None
         return d
 
     def addBuilderMaster(self, builderid=None, masterid=None):
@@ -55,8 +96,8 @@ class BuildersConnectorComponent(base.DBConnectorComponent):
         def thd(conn, no_recurse=False):
             tbl = self.db.model.builder_masters
             conn.execute(tbl.delete(
-                whereclause=((tbl.c.builderid == builderid)
-                             & (tbl.c.masterid == masterid))))
+                whereclause=((tbl.c.builderid == builderid) &
+                             (tbl.c.masterid == masterid))))
         return self.db.pool.do(thd)
 
     def getBuilders(self, masterid=None, _builderid=None):
@@ -72,7 +113,8 @@ class BuildersConnectorComponent(base.DBConnectorComponent):
                 j = j.join(limiting_bm_tbl,
                            onclause=(bldr_tbl.c.id == limiting_bm_tbl.c.builderid))
             q = sa.select(
-                [bldr_tbl.c.id, bldr_tbl.c.name, bm_tbl.c.masterid],
+                [bldr_tbl.c.id, bldr_tbl.c.name,
+                    bldr_tbl.c.description, bm_tbl.c.masterid],
                 from_obj=[j],
                 order_by=[bldr_tbl.c.id, bm_tbl.c.masterid])
             if masterid is not None:
@@ -85,10 +127,27 @@ class BuildersConnectorComponent(base.DBConnectorComponent):
             rv = []
             last = None
             for row in conn.execute(q).fetchall():
+                # pylint: disable=unsubscriptable-object
                 if not last or row['id'] != last['id']:
-                    last = dict(id=row.id, name=row.name, masterids=[])
+                    last = self._thd_row2dict(conn, row)
                     rv.append(last)
                 if row['masterid']:
                     last['masterids'].append(row['masterid'])
             return rv
         return self.db.pool.do(thd)
+
+    def _thd_row2dict(self, conn, row):
+        # get tags
+        builders_tags = self.db.model.builders_tags
+        tags = self.db.model.tags
+        from_clause = tags
+        from_clause = from_clause.join(builders_tags)
+        q = sa.select([tags.c.name],
+                      (builders_tags.c.builderid == row.id)).select_from(from_clause)
+
+        tags = [r.name for r in
+                conn.execute(q).fetchall()]
+
+        return dict(id=row.id, name=row.name, masterids=[],
+                    description=row.description,
+                    tags=tags)

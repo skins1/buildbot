@@ -13,20 +13,25 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
 
-from buildbot import config
-from buildbot.mq import base
-from buildbot.mq import connector
 from twisted.internet import defer
 from twisted.trial import unittest
 
+from buildbot.mq import base
+from buildbot.mq import connector
+from buildbot.test.fake import fakemaster
+from buildbot.util import service
 
-class FakeMQ(config.ReconfigurableServiceMixin, base.MQBase):
+
+class FakeMQ(service.ReconfigurableServiceMixin, base.MQBase):
 
     new_config = "not_called"
 
-    def reconfigService(self, new_config):
+    def reconfigServiceWithBuildbotConfig(self, new_config):
         self.new_config = new_config
         return defer.succeed(None)
 
@@ -40,9 +45,10 @@ class FakeMQ(config.ReconfigurableServiceMixin, base.MQBase):
 class MQConnector(unittest.TestCase):
 
     def setUp(self):
-        self.master = mock.Mock(name='master')
+        self.master = fakemaster.make_master()
         self.mqconfig = self.master.config.mq = {}
-        self.conn = connector.MQConnector(self.master)
+        self.conn = connector.MQConnector()
+        self.conn.setServiceParent(self.master)
 
     def patchFakeMQ(self, name='fake'):
         self.patch(connector.MQConnector, 'classes',
@@ -64,13 +70,13 @@ class MQConnector(unittest.TestCase):
         self.assertEqual(self.conn.impl.startConsuming,
                          self.conn.startConsuming)
 
-    def test_reconfigService(self):
+    def test_reconfigServiceWithBuildbotConfig(self):
         self.patchFakeMQ()
         self.mqconfig['type'] = 'fake'
         self.conn.setup()
         new_config = mock.Mock()
         new_config.mq = dict(type='fake')
-        d = self.conn.reconfigService(new_config)
+        d = self.conn.reconfigServiceWithBuildbotConfig(new_config)
 
         @d.addCallback
         def check(_):
@@ -85,7 +91,7 @@ class MQConnector(unittest.TestCase):
         new_config = mock.Mock()
         new_config.mq = dict(type='other')
         try:
-            yield self.conn.reconfigService(new_config)
+            yield self.conn.reconfigServiceWithBuildbotConfig(new_config)
         except AssertionError:
             pass  # expected
         else:

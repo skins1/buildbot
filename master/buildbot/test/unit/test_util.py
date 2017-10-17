@@ -13,16 +13,22 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import text_type
+
 import datetime
 import locale
-import mock
 import os
+
+import mock
 
 from twisted.internet import reactor
 from twisted.internet import task
 from twisted.trial import unittest
 
 from buildbot import util
+from buildbot.util import PY3
 
 
 class formatInterval(unittest.TestCase):
@@ -61,30 +67,70 @@ class formatInterval(unittest.TestCase):
         self.assertEqual(util.formatInterval(7392), "2 hrs, 3 mins, 12 secs")
 
 
+class TestHumanReadableDelta(unittest.TestCase):
+
+    def test_timeDeltaToHumanReadable(self):
+        """
+        It will return a human readable time difference.
+        """
+        try:
+            datetime.datetime.fromtimestamp(1)
+        except OSError:
+            raise unittest.SkipTest(
+                "Python 3.6 bug on Windows: "
+                "https://bugs.python.org/issue29097")
+        result = util.human_readable_delta(1, 1)
+        self.assertEqual('super fast', result)
+
+        result = util.human_readable_delta(1, 2)
+        self.assertEqual('1 seconds', result)
+
+        result = util.human_readable_delta(1, 61)
+        self.assertEqual('1 minutes', result)
+
+        result = util.human_readable_delta(1, 62)
+        self.assertEqual('1 minutes, 1 seconds', result)
+
+        result = util.human_readable_delta(1, 60 * 60 + 1)
+        self.assertEqual('1 hours', result)
+
+        result = util.human_readable_delta(1, 60 * 60 + 61)
+        self.assertEqual('1 hours, 1 minutes', result)
+
+        result = util.human_readable_delta(1, 60 * 60 + 62)
+        self.assertEqual('1 hours, 1 minutes, 1 seconds', result)
+
+        result = util.human_readable_delta(1, 24 * 60 * 60 + 1)
+        self.assertEqual('1 days', result)
+
+        result = util.human_readable_delta(1, 24 * 60 * 60 + 2)
+        self.assertEqual('1 days, 1 seconds', result)
+
+
 class safeTranslate(unittest.TestCase):
 
     def test_str_good(self):
-        self.assertEqual(util.safeTranslate(str("full")), str("full"))
+        self.assertEqual(util.safeTranslate(str("full")), b"full")
 
     def test_str_bad(self):
         self.assertEqual(util.safeTranslate(str("speed=slow;quality=high")),
-                         str("speed_slow_quality_high"))
+                         b"speed_slow_quality_high")
 
     def test_str_pathological(self):
         # if you needed proof this wasn't for use with sensitive data
         self.assertEqual(util.safeTranslate(str("p\ath\x01ogy")),
-                         str("p\ath\x01ogy"))  # bad chars still here!
+                         b"p\ath\x01ogy")  # bad chars still here!
 
     def test_unicode_good(self):
-        self.assertEqual(util.safeTranslate(u"full"), str("full"))
+        self.assertEqual(util.safeTranslate(u"full"), b"full")
 
     def test_unicode_bad(self):
-        self.assertEqual(util.safeTranslate(unicode("speed=slow;quality=high")),
-                         str("speed_slow_quality_high"))
+        self.assertEqual(util.safeTranslate(text_type("speed=slow;quality=high")),
+                         b"speed_slow_quality_high")
 
     def test_unicode_pathological(self):
         self.assertEqual(util.safeTranslate(u"\u0109"),
-                         str("\xc4\x89"))  # yuck!
+                         b"\xc4\x89")  # yuck!
 
 
 class naturalSort(unittest.TestCase):
@@ -202,57 +248,100 @@ class Flatten(unittest.TestCase):
         self.assertEqual(util.flatten([[1, 2], 3, [[4]]]),
                          [1, 2, 3, 4])
 
-    def test_tuples(self):
-        self.assertEqual(util.flatten([(1, 2), 3]), [(1, 2), 3])
+    # def test_deeply_nested(self):
+    #     self.assertEqual(util.flatten([5, [6, (7, 8)]]),
+    #                      [5, 6, 7, 8])
+
+    # def test_tuples(self):
+    #     self.assertEqual(util.flatten([(1, 2), 3]), [1, 2, 3])
+
+    def test_dict(self):
+        d = {'a': [5, 6, 7], 'b': [7, 8, 9]}
+        self.assertEqual(util.flatten(d), d)
+
+    def test_string(self):
+        self.assertEqual(util.flatten("abc"), "abc")
 
 
 class Ascii2Unicode(unittest.TestCase):
 
     def test_unicode(self):
         rv = util.ascii2unicode(u'\N{SNOWMAN}')
-        self.assertEqual((rv, type(rv)), (u'\N{SNOWMAN}', unicode))
+        self.assertEqual((rv, type(rv)), (u'\N{SNOWMAN}', text_type))
 
     def test_ascii(self):
         rv = util.ascii2unicode('abcd')
-        self.assertEqual((rv, type(rv)), (u'abcd', unicode))
+        self.assertEqual((rv, type(rv)), (u'abcd', text_type))
 
     def test_nonascii(self):
         self.assertRaises(UnicodeDecodeError, lambda:
-                          util.ascii2unicode('a\x85'))
+                          util.ascii2unicode(b'a\x85'))
 
     def test_None(self):
         self.assertEqual(util.ascii2unicode(None), None)
+
+
+class Bytes2Unicode(unittest.TestCase):
+
+    def test_bytes2unicode(self):
+        rv1 = util.bytes2unicode(b'abcd')
+        rv2 = util.bytes2unicode('efgh')
+
+        self.assertEqual(type(rv1), text_type)
+        self.assertEqual(type(rv2), text_type)
+
+    def test_bytes2NativeString(self):
+        rv = util.bytes2NativeString(b'abcd')
+        self.assertEqual((rv, type(rv)), ('abcd', str))
+        rv = util.bytes2NativeString('efgh')
+        self.assertEqual((rv, type(rv)), ('efgh', str))
+
+        if PY3:
+            self.assertNotEqual(type('abcd'), type(b'abcd'))
+            self.assertNotEqual(str, bytes)
+        else:
+            self.assertEqual(type('abcd'), type(b'abcd'))
+            self.assertEqual(str, bytes)
+
+
+class Unicode2NativeString(unittest.TestCase):
+
+    def test_unicode2NativeString(self):
+        rv = util.unicode2NativeString(u'abcd')
+        self.assertEqual((rv, type(rv)), ('abcd', str))
+        rv = util.unicode2NativeString('efgh')
+        self.assertEqual((rv, type(rv)), ('efgh', str))
 
 
 class StringToBoolean(unittest.TestCase):
 
     def test_it(self):
         stringValues = [
-            ('on', True),
-            ('true', True),
-            ('yes', True),
-            ('1', True),
-            ('off', False),
-            ('false', False),
-            ('no', False),
-            ('0', False),
-            ('ON', True),
-            ('TRUE', True),
-            ('YES', True),
-            ('OFF', False),
-            ('FALSE', False),
-            ('NO', False),
+            (b'on', True),
+            (b'true', True),
+            (b'yes', True),
+            (b'1', True),
+            (b'off', False),
+            (b'false', False),
+            (b'no', False),
+            (b'0', False),
+            (b'ON', True),
+            (b'TRUE', True),
+            (b'YES', True),
+            (b'OFF', False),
+            (b'FALSE', False),
+            (b'NO', False),
         ]
         for s, b in stringValues:
             self.assertEqual(util.string2boolean(s), b, repr(s))
 
     def test_ascii(self):
-        rv = util.ascii2unicode('abcd')
-        self.assertEqual((rv, type(rv)), (u'abcd', unicode))
+        rv = util.ascii2unicode(b'abcd')
+        self.assertEqual((rv, type(rv)), (u'abcd', text_type))
 
     def test_nonascii(self):
         self.assertRaises(UnicodeDecodeError, lambda:
-                          util.ascii2unicode('a\x85'))
+                          util.ascii2unicode(b'a\x85'))
 
     def test_None(self):
         self.assertEqual(util.ascii2unicode(None), None)
@@ -311,3 +400,151 @@ class StripUrlPassword(unittest.TestCase):
         self.assertEqual(
             util.stripUrlPassword('http://d@bb.net:scrt@foo.com/bar'),
             'http://d@bb.net:xxxx@foo.com/bar')
+
+
+class JoinList(unittest.TestCase):
+
+    def test_list(self):
+        self.assertEqual(util.join_list(['aa', 'bb']), u'aa bb')
+
+    def test_tuple(self):
+        self.assertEqual(util.join_list(('aa', 'bb')), u'aa bb')
+
+    def test_string(self):
+        self.assertEqual(util.join_list('abc'), u'abc')
+
+    def test_unicode(self):
+        self.assertEqual(util.join_list(u'abc'), u'abc')
+
+    def test_nonascii(self):
+        self.assertRaises(UnicodeDecodeError, lambda: util.join_list([b'\xff']))
+
+
+class CommandToString(unittest.TestCase):
+
+    def test_short_string(self):
+        self.assertEqual(util.command_to_string("ab cd"), u"'ab cd'")
+
+    def test_long_string(self):
+        self.assertEqual(util.command_to_string("ab cd ef"), u"'ab cd ...'")
+
+    def test_list(self):
+        self.assertEqual(util.command_to_string(['ab', 'cd', 'ef']),
+                         u"'ab cd ...'")
+
+    def test_nested_list(self):
+        self.assertEqual(util.command_to_string(['ab', ['cd', ['ef']]]),
+                         u"'ab cd ...'")
+
+    def test_object(self):
+        # this looks like a renderable
+        self.assertEqual(util.command_to_string(object()), None)
+
+    def test_list_with_objects(self):
+        # the object looks like a renderable, and is skipped
+        self.assertEqual(util.command_to_string(['ab', object(), 'cd']),
+                         u"'ab cd'")
+
+    def test_invalid_ascii(self):
+        self.assertEqual(util.command_to_string(b'a\xffc'), u"'a\ufffdc'")
+
+
+class TestRewrap(unittest.TestCase):
+
+    def test_main(self):
+        tests = [
+            ("", "", None),
+            ("\n", "\n", None),
+            ("\n  ", "\n", None),
+            ("  \n", "\n", None),
+            ("  \n  ", "\n", None),
+            ("""
+                multiline
+                with
+                indent
+                """,
+             "\nmultiline with indent",
+             None),
+            ("""\
+                multiline
+                with
+                indent
+
+                """,
+             "multiline with indent\n",
+             None),
+            ("""\
+                 multiline
+                 with
+                 indent
+
+                 """,
+             "multiline with indent\n",
+             None),
+            ("""\
+                multiline
+                with
+                indent
+
+                  and
+                   formatting
+                """,
+             "multiline with indent\n  and\n   formatting\n",
+             None),
+            ("""\
+                multiline
+                with
+                indent
+                and wrapping
+
+                  and
+                   formatting
+                """,
+             "multiline with\nindent and\nwrapping\n  and\n   formatting\n",
+             15),
+        ]
+
+        for text, expected, width in tests:
+            self.assertEqual(util.rewrap(text, width=width), expected)
+
+
+class TestMerge(unittest.TestCase):
+
+    def test_merge(self):
+        self.assertEqual(
+            util.dictionary_merge(
+                {
+                    'a': {'b': 1}
+                },
+                {
+                    'a': {'c': 2}
+                }),
+            {
+                'a': {'b': 1, 'c': 2}
+            })
+
+    def test_overwrite(self):
+        self.assertEqual(
+            util.dictionary_merge(
+                {
+                    'a': {'b': 1}
+                },
+                {
+                    'a': 1
+                }),
+            {
+                'a': 1
+            })
+
+    def test_overwrite2(self):
+        self.assertEqual(
+            util.dictionary_merge(
+                {
+                    'a': {'b': 1, 'c': 2}
+                },
+                {
+                    'a': {'b': [1, 2, 3]}
+                }),
+            {
+                'a': {'b': [1, 2, 3], 'c': 2}
+            })

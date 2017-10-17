@@ -13,17 +13,33 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot.util import service
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.python import failure
 from twisted.python import log
 
+from buildbot.util import service
+
 
 class MQBase(service.AsyncService):
+    name = 'mq-implementation'
 
-    def __init__(self, master):
-        self.setName('mq-implementation')
-        self.master = master
+    @defer.inlineCallbacks
+    def waitUntilEvent(self, filter, check_callback):
+        d = defer.Deferred()
+        buildCompleteConsumer = yield self.startConsuming(
+            lambda key, value: d.callback((key, value)),
+            filter)
+        check = yield check_callback()
+        # we only wait if the check callback return true
+        if not check:
+            res = yield d
+        else:
+            res = None
+        yield buildCompleteConsumer.stopConsuming()
+        defer.returnValue(res)
 
 
 class QueueRef(object):

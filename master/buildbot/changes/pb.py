@@ -14,12 +14,16 @@
 # Copyright Buildbot Team Members
 
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.python import log
 
 from buildbot import config
 from buildbot.changes import base
 from buildbot.pbutil import NewCredPerspective
+from buildbot.util import service
 
 
 class ChangePerspective(NewCredPerspective):
@@ -63,11 +67,11 @@ class ChangePerspective(NewCredPerspective):
         # in the first place, but older clients do not, so this fallback is
         # useful.
         for key in changedict:
-            if isinstance(changedict[key], str):
+            if isinstance(changedict[key], bytes):
                 changedict[key] = changedict[key].decode('utf8', 'replace')
         changedict['files'] = list(changedict['files'])
         for i, file in enumerate(changedict.get('files', [])):
-            if isinstance(file, str):
+            if isinstance(file, bytes):
                 changedict['files'][i] = file.decode('utf8', 'replace')
 
         files = []
@@ -95,7 +99,7 @@ class ChangePerspective(NewCredPerspective):
         return d
 
 
-class PBChangeSource(config.ReconfigurableServiceMixin, base.ChangeSource):
+class PBChangeSource(base.ChangeSource):
     compare_attrs = ("user", "passwd", "port", "prefix", "port")
 
     def __init__(self, user="change", passwd="changepw", port=None,
@@ -107,7 +111,7 @@ class PBChangeSource(config.ReconfigurableServiceMixin, base.ChangeSource):
             else:
                 name = "PBChangeSource:%s" % (port,)
 
-        base.ChangeSource.__init__(self, name)
+        base.ChangeSource.__init__(self, name=name)
 
         self.user = user
         self.passwd = passwd
@@ -124,7 +128,7 @@ class PBChangeSource(config.ReconfigurableServiceMixin, base.ChangeSource):
         return d
 
     def _calculatePort(self, cfg):
-        # calculate the new port, defaulting to the slave's PB port if
+        # calculate the new port, defaulting to the worker's PB port if
         # none was specified
         port = self.port
         if port is None:
@@ -132,18 +136,18 @@ class PBChangeSource(config.ReconfigurableServiceMixin, base.ChangeSource):
         return port
 
     @defer.inlineCallbacks
-    def reconfigService(self, new_config):
+    def reconfigServiceWithBuildbotConfig(self, new_config):
         port = self._calculatePort(new_config)
         if not port:
             config.error("No port specified for PBChangeSource, and no "
-                         "slave port configured")
+                         "worker port configured")
 
         # and, if it's changed, re-register
         if port != self.registered_port and self.isActive():
             yield self._unregister()
             self._register(port)
 
-        yield config.ReconfigurableServiceMixin.reconfigService(
+        yield service.ReconfigurableServiceMixin.reconfigServiceWithBuildbotConfig(
             self, new_config)
 
     def activate(self):
@@ -168,8 +172,7 @@ class PBChangeSource(config.ReconfigurableServiceMixin, base.ChangeSource):
             reg = self.registration
             self.registration = None
             return reg.unregister()
-        else:
-            return defer.succeed(None)
+        return defer.succeed(None)
 
     def getPerspective(self, mind, username):
         assert username == self.user

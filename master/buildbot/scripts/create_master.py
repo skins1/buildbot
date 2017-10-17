@@ -13,27 +13,31 @@
 #
 # Copyright Buildbot Team Members
 
-from __future__ import with_statement
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from future.utils import iteritems
+
+import os
 
 import jinja2
-import os
+
+from twisted.internet import defer
+from twisted.python import util
 
 from buildbot import config as config_module
 from buildbot import monkeypatches
-from buildbot.db import connector
 from buildbot.master import BuildMaster
 from buildbot.util import in_reactor
-from twisted.internet import defer
-from twisted.python import util
 
 
 def makeBasedir(config):
     if os.path.exists(config['basedir']):
         if not config['quiet']:
-            print "updating existing installation"
+            print("updating existing installation")
         return
     if not config['quiet']:
-        print "mkdir", config['basedir']
+        print("mkdir", config['basedir'])
     os.mkdir(config['basedir'])
 
 
@@ -43,7 +47,7 @@ def makeTAC(config):
     env = jinja2.Environment(loader=loader, undefined=jinja2.StrictUndefined)
     env.filters['repr'] = repr
     tpl = env.get_template('buildbot_tac.tmpl')
-    cxt = dict((k.replace('-', '_'), v) for k, v in config.iteritems())
+    cxt = dict((k.replace('-', '_'), v) for k, v in iteritems(config))
     contents = tpl.render(cxt)
 
     tacfile = os.path.join(config['basedir'], "buildbot.tac")
@@ -52,11 +56,11 @@ def makeTAC(config):
             oldcontents = f.read()
         if oldcontents == contents:
             if not config['quiet']:
-                print "buildbot.tac already exists and is correct"
+                print("buildbot.tac already exists and is correct")
             return
         if not config['quiet']:
-            print "not touching existing buildbot.tac"
-            print "creating buildbot.tac.new instead"
+            print("not touching existing buildbot.tac")
+            print("creating buildbot.tac.new instead")
         tacfile += ".new"
     with open(tacfile, "wt") as f:
         f.write(contents)
@@ -66,7 +70,7 @@ def makeSampleConfig(config):
     source = util.sibpath(__file__, "sample.cfg")
     target = os.path.join(config['basedir'], "master.cfg.sample")
     if not config['quiet']:
-        print "creating %s" % target
+        print("creating %s" % target)
     with open(source, "rt") as f:
         config_sample = f.read()
     if config['db']:
@@ -74,19 +78,7 @@ def makeSampleConfig(config):
                                               config['db'])
     with open(target, "wt") as f:
         f.write(config_sample)
-    os.chmod(target, 0600)
-
-
-def makePublicHtml(config):
-    webdir = os.path.join(config['basedir'], "public_html")
-    if os.path.exists(webdir):
-        if not config['quiet']:
-            print "public_html/ already exists: not replacing"
-        return
-    else:
-        os.mkdir(webdir)
-    if not config['quiet']:
-        print "populating public_html/"
+    os.chmod(target, 0o600)
 
 
 @defer.inlineCallbacks
@@ -101,10 +93,10 @@ def createDB(config, _noMonkey=False):
     master_cfg.db['db_url'] = config['db']
     master = BuildMaster(config['basedir'])
     master.config = master_cfg
-    db = connector.DBConnector(master, config['basedir'])
+    db = master.db
     yield db.setup(check_version=False, verbose=not config['quiet'])
     if not config['quiet']:
-        print "creating database (%s)" % (master_cfg.db['db_url'],)
+        print("creating database (%s)" % (master_cfg.db['db_url'],))
     yield db.model.upgrade()
 
 
@@ -114,10 +106,9 @@ def createMaster(config):
     makeBasedir(config)
     makeTAC(config)
     makeSampleConfig(config)
-    makePublicHtml(config)
     yield createDB(config)
 
     if not config['quiet']:
-        print "buildmaster configured in %s" % (config['basedir'],)
+        print("buildmaster configured in %s" % (config['basedir'],))
 
     defer.returnValue(0)

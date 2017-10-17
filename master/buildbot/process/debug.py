@@ -13,17 +13,19 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import config
-from buildbot.util import service
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 
+from buildbot.util import service
 
-class DebugServices(config.ReconfigurableServiceMixin, service.AsyncMultiService):
 
-    def __init__(self, master):
+class DebugServices(service.ReconfigurableServiceMixin, service.AsyncMultiService):
+    name = 'debug_services'
+
+    def __init__(self):
         service.AsyncMultiService.__init__(self)
-        self.setName('debug_services')
-        self.master = master
 
         self.debug_port = None
         self.debug_password = None
@@ -31,21 +33,19 @@ class DebugServices(config.ReconfigurableServiceMixin, service.AsyncMultiService
         self.manhole = None
 
     @defer.inlineCallbacks
-    def reconfigService(self, new_config):
+    def reconfigServiceWithBuildbotConfig(self, new_config):
         if new_config.manhole != self.manhole:
             if self.manhole:
                 yield self.manhole.disownServiceParent()
-                self.manhole.master = None
                 self.manhole = None
 
             if new_config.manhole:
                 self.manhole = new_config.manhole
-                self.manhole.master = self.master
                 yield self.manhole.setServiceParent(self)
 
         # chain up
-        yield config.ReconfigurableServiceMixin.reconfigService(self,
-                                                                new_config)
+        yield service.ReconfigurableServiceMixin.reconfigServiceWithBuildbotConfig(self,
+                                                                                   new_config)
 
     @defer.inlineCallbacks
     def stopService(self):
@@ -54,5 +54,4 @@ class DebugServices(config.ReconfigurableServiceMixin, service.AsyncMultiService
 
         # clean up
         if self.manhole:
-            self.manhole.master = None
             self.manhole = None

@@ -13,13 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
 
-from buildbot.mq import base
-from buildbot.test.util import compat
 from twisted.internet import defer
 from twisted.python import failure
 from twisted.trial import unittest
+
+from buildbot.mq import base
 
 
 class QueueRef(unittest.TestCase):
@@ -41,7 +44,6 @@ class QueueRef(unittest.TestCase):
 
         cb.assert_called_with('rk', 'd')
 
-    @compat.usesFlushLoggedErrors
     def test_exception(self):
         cb = mock.Mock(name='cb')
         cb.side_effect = RuntimeError('oh noes!')
@@ -52,7 +54,6 @@ class QueueRef(unittest.TestCase):
         cb.assert_called_with('rk', 'd')
         self.assertEqual(len(self.flushLoggedErrors(RuntimeError)), 1)
 
-    @compat.usesFlushLoggedErrors
     def test_failure(self):
         cb = mock.Mock(name='cb')
         cb.return_value = defer.fail(failure.Failure(RuntimeError('oh noes!')))

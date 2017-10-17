@@ -13,9 +13,13 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.trial import unittest
+
 from buildbot.data import patches
 from buildbot.test.fake import fakemaster
-from twisted.trial import unittest
 
 
 class Patch(unittest.TestCase):

@@ -19,15 +19,26 @@
 Standard setup script.
 """
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import glob
+import inspect
 import os
+import pkg_resources
 import sys
-
-from buildbot import version
-from distutils.core import setup
-
 from distutils.command.install_data import install_data
 from distutils.command.sdist import sdist
+from distutils.version import LooseVersion
+
+from setuptools import setup
+
+from buildbot import version
+
+if "bdist_wheel" in sys.argv:
+    BUILDING_WHEEL = True
+else:
+    BUILDING_WHEEL = False
 
 
 def include(d, e):
@@ -79,10 +90,12 @@ class our_sdist(sdist):
         # ensure that NEWS has a copy of the latest release notes, with the
         # proper version substituted
         src_fn = os.path.join('docs', 'relnotes/index.rst')
-        src = open(src_fn).read()
+        with open(src_fn) as f:
+            src = f.read()
         src = src.replace('|version|', version)
         dst_fn = os.path.join(base_dir, 'NEWS')
-        open(dst_fn, 'w').write(src)
+        with open(dst_fn, 'w') as f:
+            f.write(src)
 
 
 def define_plugin_entry(name, module_name):
@@ -94,6 +107,13 @@ def define_plugin_entry(name, module_name):
     else:
         entry = name
     return '%s = %s:%s' % (entry, module_name, name)
+
+
+def concat_dicts(*dicts):
+    result = dict()
+    for d in dicts:
+        result.update(d)
+    return result
 
 
 def define_plugin_entries(groups):
@@ -111,28 +131,10 @@ def define_plugin_entries(groups):
 
     return result
 
+__file__ = inspect.getframeinfo(inspect.currentframe()).filename
 
-long_description = """
-The Buildbot is a system to automate the compile/test cycle required by
-most software projects to validate code changes. By automatically
-rebuilding and testing the tree each time something has changed, build
-problems are pinpointed quickly, before other developers are
-inconvenienced by the failure. The guilty developer can be identified
-and harassed without human intervention. By running the builds on a
-variety of platforms, developers who do not have the facilities to test
-their changes everywhere before checkin will at least know shortly
-afterwards whether they have broken the build or not. Warning counts,
-lint checks, image size, compile time, and other build parameters can
-be tracked over time, are more visible, and are therefore easier to
-improve.
-"""
-
-scripts = ["bin/buildbot"]
-# sdist is usually run on a non-Windows platform, but the buildslave.bat file
-# still needs to get packaged.
-if 'sdist' in sys.argv or sys.platform == 'win32':
-    scripts.append("contrib/windows/buildbot.bat")
-    scripts.append("contrib/windows/buildbot_service.py")
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as long_d_f:
+    long_description = long_d_f.read()
 
 setup_args = {
     'name': "buildbot",
@@ -153,12 +155,20 @@ setup_args = {
         'License :: OSI Approved :: GNU General Public License (GPL)',
         'Topic :: Software Development :: Build Tools',
         'Topic :: Software Development :: Testing',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6'
     ],
 
     'packages': [
         "buildbot",
         "buildbot.buildslave",
-        "buildbot.buildslave.protocols",
+        "buildbot.configurators",
+        "buildbot.worker",
+        "buildbot.worker.protocols",
         "buildbot.changes",
         "buildbot.clients",
         "buildbot.data",
@@ -170,28 +180,38 @@ setup_args = {
         "buildbot.plugins",
         "buildbot.process",
         "buildbot.process.users",
+        "buildbot.reporters",
         "buildbot.schedulers",
         "buildbot.scripts",
+        "buildbot.secrets",
+        "buildbot.secrets.providers",
+        "buildbot.statistics",
+        "buildbot.statistics.storage_backends",
         "buildbot.status",
         "buildbot.steps",
         "buildbot.steps.package",
         "buildbot.steps.package.deb",
         "buildbot.steps.package.rpm",
         "buildbot.steps.source",
+        "buildbot.util",
+        "buildbot.wamp",
+        "buildbot.www",
+        "buildbot.www.hooks",
+        "buildbot.www.authz",
+    ] + ([] if BUILDING_WHEEL else [  # skip tests for wheels (save 50% of the archive)
         "buildbot.test",
+        "buildbot.test.util",
         "buildbot.test.fake",
         "buildbot.test.fuzz",
         "buildbot.test.integration",
         "buildbot.test.regressions",
         "buildbot.test.unit",
-        "buildbot.test.util",
-        "buildbot.util",
-        "buildbot.www",
-    ],
+    ]),
     'data_files': [
         ("buildbot", [
             "buildbot/buildbot.png",
         ]),
+        include("buildbot/reporters/templates", "*.txt"),
         ("buildbot/db/migrate", [
             "buildbot/db/migrate/migrate.cfg",
         ]),
@@ -200,17 +220,21 @@ setup_args = {
             "buildbot/scripts/sample.cfg",
             "buildbot/scripts/buildbot_tac.tmpl",
         ]),
+        include("buildbot/spec", "*.raml"),
+        include("buildbot/spec/types", "*.raml"),
+        include("buildbot/test/unit/test_templates_dir", "*.html"),
+        include("buildbot/test/unit/test_templates_dir/plugin", "*.*"),
     ] + include_statics("buildbot/www/static"),
-    'scripts': scripts,
     'cmdclass': {'install_data': install_data_twisted,
                  'sdist': our_sdist},
-    'entry_points': define_plugin_entries([
-        ('buildbot.change_source', [
+    'entry_points': concat_dicts(define_plugin_entries([
+        ('buildbot.changes', [
             ('buildbot.changes.mail', [
                 'MaildirSource', 'CVSMaildirSource',
                 'SVNCommitEmailMaildirSource',
                 'BzrLaunchpadEmailMaildirSource']),
             ('buildbot.changes.bitbucket', ['BitbucketPullrequestPoller']),
+            ('buildbot.changes.github', ['GitHubPullrequestPoller']),
             ('buildbot.changes.bonsaipoller', ['BonsaiPoller']),
             ('buildbot.changes.gerritchangesource', ['GerritChangeSource']),
             ('buildbot.changes.gitpoller', ['GitPoller']),
@@ -219,29 +243,39 @@ setup_args = {
             ('buildbot.changes.pb', ['PBChangeSource']),
             ('buildbot.changes.svnpoller', ['SVNPoller'])
         ]),
-        ('buildbot.scheduler', [
+        ('buildbot.schedulers', [
             ('buildbot.schedulers.basic', [
-                'SingleBranchScheduler', 'AnyBranchScheduler', 'Triggerable']),
+                'SingleBranchScheduler', 'AnyBranchScheduler']),
             ('buildbot.schedulers.dependent', ['Dependent']),
+            ('buildbot.schedulers.triggerable', ['Triggerable']),
             ('buildbot.schedulers.forcesched', ['ForceScheduler']),
             ('buildbot.schedulers.timed', [
                 'Periodic', 'Nightly', 'NightlyTriggerable']),
             ('buildbot.schedulers.trysched', [
                 'Try_Jobdir', 'Try_Userpass'])
         ]),
-        ('buildbot.build_slave', [
-            ('buildbot.buildslave.base', ['BuildSlave']),
-            ('buildbot.buildslave.ec2', ['EC2LatentBuildSlave']),
-            ('buildbot.buildslave.libvirt', ['LibVirtSlave']),
-            ('buildbot.buildslave.openstack', ['OpenStackLatentBuildSlave'])
+        ('buildbot.secrets', [
+            ('buildbot.secrets.providers.file', ['SecretInAFile']),
+            ('buildbot.secrets.providers.vault', ['HashiCorpVaultSecretProvider'])
         ]),
-        ('buildbot.step', [
+        ('buildbot.worker', [
+            ('buildbot.worker.base', ['Worker']),
+            ('buildbot.worker.ec2', ['EC2LatentWorker']),
+            ('buildbot.worker.libvirt', ['LibVirtWorker']),
+            ('buildbot.worker.openstack', ['OpenStackLatentWorker']),
+            ('buildbot.worker.docker', ['DockerLatentWorker']),
+            ('buildbot.worker.hyper', ['HyperLatentWorker']),
+            ('buildbot.worker.local', ['LocalWorker']),
+        ]),
+        ('buildbot.steps', [
             ('buildbot.process.buildstep', ['BuildStep']),
+            ('buildbot.steps.cmake', ['CMake']),
+            ('buildbot.steps.cppcheck', ['Cppcheck']),
             ('buildbot.steps.http', [
                 'HTTPStep', 'POST', 'GET', 'PUT', 'DELETE', 'HEAD',
                 'OPTIONS']),
             ('buildbot.steps.master', [
-                'MasterShellCommand', 'SetProperty', 'LogRenderable']),
+                'MasterShellCommand', 'SetProperty', 'SetProperties', 'LogRenderable', "Assert"]),
             ('buildbot.steps.maxq', ['MaxQ']),
             ('buildbot.steps.mswin', ['Robocopy']),
             ('buildbot.steps.mtrlogobserver', ['MTR']),
@@ -252,6 +286,7 @@ setup_args = {
             ('buildbot.steps.package.rpm.mock', [
                 'Mock', 'MockBuildSRPM', 'MockRebuild']),
             ('buildbot.steps.package.rpm.rpmbuild', ['RpmBuild']),
+            ('buildbot.steps.package.rpm.rpmlint', ['RpmLint']),
             ('buildbot.steps.package.rpm.rpmspec', ['RpmSpec']),
             ('buildbot.steps.python', [
                 'BuildEPYDoc', 'PyFlakes', 'PyLint', 'Sphinx']),
@@ -262,13 +297,12 @@ setup_args = {
                 'Configure', 'WarningCountingShellCommand', 'Compile',
                 'Test', 'PerlModuleTest']),
             ('buildbot.steps.shellsequence', ['ShellSequence']),
-            ('buildbot.steps.slave', [
-                'SetPropertiesFromEnv', 'FileExists', 'CopyDirectory',
-                'RemoveDirectory', 'MakeDirectory']),
             ('buildbot.steps.source.bzr', ['Bzr']),
             ('buildbot.steps.source.cvs', ['CVS']),
             ('buildbot.steps.source.darcs', ['Darcs']),
+            ('buildbot.steps.source.gerrit', ['Gerrit']),
             ('buildbot.steps.source.git', ['Git']),
+            ('buildbot.steps.source.github', ['GitHub']),
             ('buildbot.steps.source.mercurial', ['Mercurial']),
             ('buildbot.steps.source.mtn', ['Monotone']),
             ('buildbot.steps.source.p4', ['P4']),
@@ -283,18 +317,30 @@ setup_args = {
             ('buildbot.steps.vstudio', [
                 'VC6', 'VC7', 'VS2003', 'VC8', 'VS2005', 'VCExpress9', 'VC9',
                 'VS2008', 'VC10', 'VS2010', 'VC11', 'VS2012', 'VC12', 'VS2013',
-                'MsBuild4', 'MsBuild', 'MsBuild12'])
+                'VC14', 'VS2015', 'MsBuild4', 'MsBuild', 'MsBuild12', 'MsBuild14']),
+            ('buildbot.steps.worker', [
+                'SetPropertiesFromEnv', 'FileExists', 'CopyDirectory',
+                'RemoveDirectory', 'MakeDirectory']),
         ]),
-        ('buildbot.status', [
-            ('buildbot.status.mail', ['MailNotifier']),
-            ('buildbot.status.words', ['IRC']),
-            ('buildbot.status.status_push', ['StatusPush', 'HttpStatusPush']),
-            ('buildbot.status.status_gerrit', ['GerritStatusPush']),
-            ('buildbot.status.github', ['GitHubStatus'])
+        ('buildbot.reporters', [
+            ('buildbot.reporters.mail', ['MailNotifier']),
+            ('buildbot.reporters.pushjet', ['PushjetNotifier']),
+            ('buildbot.reporters.pushover', ['PushoverNotifier']),
+            ('buildbot.reporters.message', ['MessageFormatter']),
+            ('buildbot.reporters.gerrit', ['GerritStatusPush']),
+            ('buildbot.reporters.gerrit_verify_status',
+             ['GerritVerifyStatusPush']),
+            ('buildbot.reporters.http', ['HttpStatusPush']),
+            ('buildbot.reporters.github', ['GitHubStatusPush', 'GitHubCommentPush']),
+            ('buildbot.reporters.gitlab', ['GitLabStatusPush']),
+            ('buildbot.reporters.stash', ['StashStatusPush']),
+            ('buildbot.reporters.bitbucketserver', ['BitbucketServerStatusPush', 'BitbucketServerPRCommentPush']),
+            ('buildbot.reporters.bitbucket', ['BitbucketStatusPush']),
+            ('buildbot.reporters.irc', ['IRC']),
         ]),
         ('buildbot.util', [
             # Connection seems to be a way too generic name, though
-            ('buildbot.buildslave.libvirt', ['Connection']),
+            ('buildbot.worker.libvirt', ['Connection']),
             ('buildbot.changes.filter', ['ChangeFilter']),
             ('buildbot.changes.gerritchangesource', ['GerritChangeFilter']),
             ('buildbot.changes.svnpoller', [
@@ -302,28 +348,38 @@ setup_args = {
                  'split_file_projects_branches'),
                 ('svn.split_file_branches', 'split_file_branches'),
                 ('svn.split_file_alwaystrunk', 'split_file_alwaystrunk')]),
+            ('buildbot.configurators.janitor', ['JanitorConfigurator']),
             ('buildbot.config', ['BuilderConfig']),
-            ('buildbot.locks', ['MasterLock', 'SlaveLock']),
+            ('buildbot.locks', [
+                'MasterLock',
+                'WorkerLock',
+            ]),
             ('buildbot.manhole', [
                 'AuthorizedKeysManhole', 'PasswordManhole', 'TelnetManhole']),
-            ('buildbot.process.builder', ['enforceChosenSlave']),
+            ('buildbot.process.builder', [
+                'enforceChosenWorker',
+            ]),
             ('buildbot.process.factory', [
                 'BuildFactory', 'GNUAutoconf', 'CPAN', 'Distutils', 'Trial',
                 'BasicBuildFactory', 'QuickBuildFactory', 'BasicSVN']),
             ('buildbot.process.logobserver', ['LogLineObserver']),
             ('buildbot.process.properties', [
-                'FlattenList', 'Interpolate', 'Property', 'WithProperties',
-                'renderer']),
+                'FlattenList', 'Interpolate', 'Property', 'Transform',
+                'WithProperties', 'renderer']),
             ('buildbot.process.properties', [
                 'CommandlineUserManager']),
             ('buildbot.revlinks', ['RevlinkMatch']),
+            ('buildbot.reporters.utils', ['URLForBuild']),
             ('buildbot.schedulers.forcesched', [
                 'AnyPropertyParameter', 'BooleanParameter',
-                'BuildslaveChoiceParameter', 'ChoiceStringParameter',
-                'CodebaseParameter', 'FixedParameter', 'InheritBuildParameter',
+                'ChoiceStringParameter',
+                'CodebaseParameter', 'FileParameter', 'FixedParameter', 'InheritBuildParameter',
                 'IntParameter', 'NestedParameter', 'ParameterGroup',
-                'StringParameter', 'TextParameter', 'UserNameParameter']),
-            ('buildbot.status.results', [
+                'PatchParameter',
+                'StringParameter', 'TextParameter', 'UserNameParameter',
+                'WorkerChoiceParameter',
+            ]),
+            ('buildbot.process.results', [
                 'Results', 'SUCCESS', 'WARNINGS', 'FAILURE', 'SKIPPED',
                 'EXCEPTION', 'RETRY', 'CANCELLED']),
             ('buildbot.steps.mtrlogobserver', ['EqConnectionPool']),
@@ -336,11 +392,36 @@ setup_args = {
             ('buildbot.www.avatar', ['AvatarGravatar']),
             ('buildbot.www.auth', [
                 'UserPasswordAuth', 'HTPasswdAuth', 'RemoteUserAuth']),
-            ('buildbot.www.ldapuserinfos', ['LdapUserInfo']),
+            ('buildbot.www.ldapuserinfo', ['LdapUserInfo']),
             ('buildbot.www.oauth2', [
-                'GoogleAuth', 'GitHubAuth'])
+                'GoogleAuth', 'GitHubAuth', 'GitLabAuth', 'BitbucketAuth']),
+            ('buildbot.db.dbconfig', [
+                'DbConfig']),
+            ('buildbot.www.authz', [
+                'Authz', 'fnmatchStrMatcher', 'reStrMatcher']),
+            ('buildbot.www.authz.roles', [
+                'RolesFromEmails', 'RolesFromGroups', 'RolesFromOwner', 'RolesFromUsername',
+                'RolesFromDomain']),
+            ('buildbot.www.authz.endpointmatchers', [
+                'AnyEndpointMatcher', 'StopBuildEndpointMatcher', 'ForceBuildEndpointMatcher',
+                'RebuildBuildEndpointMatcher', 'AnyControlEndpointMatcher', 'EnableSchedulerEndpointMatcher']),
+        ]),
+        ('buildbot.webhooks', [
+            ('buildbot.www.hooks.base', ['base']),
+            ('buildbot.www.hooks.bitbucket', ['bitbucket']),
+            ('buildbot.www.hooks.github', ['github']),
+            ('buildbot.www.hooks.gitlab', ['gitlab']),
+            ('buildbot.www.hooks.gitorious', ['gitorious']),
+            ('buildbot.www.hooks.poller', ['poller']),
+            ('buildbot.www.hooks.bitbucketserver', ['bitbucketserver'])
         ])
-    ])
+    ]), {
+        'console_scripts': [
+            'buildbot=buildbot.scripts.runner:run',
+            # this will also be shipped on non windows :-(
+            'buildbot_windows_service=buildbot.scripts.windows_service:HandleCommandLine',
+        ]}
+    )
 }
 
 # set zip_safe to false to force Windows installs to always unpack eggs
@@ -349,45 +430,129 @@ setup_args = {
 if sys.platform == "win32":
     setup_args['zip_safe'] = False
 
-py_26 = sys.version_info[0] > 2 or (sys.version_info[0] == 2 and sys.version_info[1] >= 6)
+py_26 = sys.version_info[0] > 2 or (
+    sys.version_info[0] == 2 and sys.version_info[1] >= 6)
 if not py_26:
     raise RuntimeError("Buildbot master requires at least Python-2.6")
 
-try:
-    # If setuptools is installed, then we'll add setuptools-specific arguments
-    # to the setup args.
-    import setuptools  # @UnusedImport
-except ImportError:
-    pass
+# pip<1.4 doesn't have the --pre flag, and will thus attempt to install alpha
+# and beta versions of Buildbot.  Prevent that from happening.
+VERSION_MSG = """
+This is a pre-release version of Buildbot, which can only be installed with
+pip-1.4 or later Try installing the latest stable version of Buildbot instead:
+    pip install buildbot==0.8.12
+See https://pypi.python.org/pypi/buildbot to verify the current stable version.
+"""
+if 'a' in version or 'b' in version:
+    try:
+        pip_dist = pkg_resources.get_distribution('pip')
+    except pkg_resources.DistributionNotFound:
+        pip_dist = None
+
+    if pip_dist:
+        if LooseVersion(pip_dist.version) < LooseVersion('1.4'):
+            raise RuntimeError(VERSION_MSG)
+
+if sys.version_info[0] >= 3:
+    twisted_ver = ">= 17.9.0"
 else:
-    # dependencies
-    if sys.version_info[0] == 2 and sys.version_info[1] <= 5:
-        zi = 'zope.interface >= 3.6.1'  # the newest that works on Python 2.5
-    else:
-        zi = 'zope.interface >= 4.1.1'  # required for tests, but Twisted requires this anyway
+    twisted_ver = ">= 14.0.1"
+autobahn_ver = ">= 0.16.0"
+txaio_ver = ">= 2.2.2"
 
-    setup_args['install_requires'] = [
-        'twisted >= 11.0.0',
-        'Jinja2 >= 2.1',
-        zi,
+bundle_version = version.split("-")[0]
+
+# dependencies
+setup_args['install_requires'] = [
+    'setuptools >= 8.0',
+    'Twisted ' + twisted_ver,
+    'Jinja2 >= 2.1',
+    # required for tests, but Twisted requires this anyway
+    'zope.interface >= 4.1.1',
+    # python-future required for py2/3 compatibility
+    'future',
+    'sqlalchemy>=0.8.0',
+    'sqlalchemy-migrate>=0.9',
+    'python-dateutil>=1.5',
+    'txaio ' + txaio_ver,
+    'autobahn ' + autobahn_ver,
+    'PyJWT',
+]
+
+# Unit test dependencies.
+test_deps = [
+    # http client libraries
+    'treq',
+    'txrequests',
+    # pyjade required for custom templates tests
+    'pyjade',
+    # boto3 and moto required for running EC2 tests
+    'boto3',
+    'moto',
+    # txgithub required to run buildbot.status.github module tests
+    'txgithub',
+    'ramlfications',
+    'mock>=2.0.0',
+]
+if sys.platform != 'win32':
+    test_deps += [
+        # LZ4 fails to build on Windows:
+        # https://github.com/steeve/python-lz4/issues/27
+        # lz4 required for log compression tests.
+        'lz4',
     ]
 
-    setup_args['install_requires'] += [
-        # sqlalchemy-0.8 betas show issues with sqlalchemy-0.7.2, so stick to 0.7.10
-        'sqlalchemy >= 0.6, <= 0.7.10',
-        # buildbot depends on sqlalchemy internals, and these are the tested
-        # versions.
-        'sqlalchemy-migrate ==0.7.0, ==0.7.1, ==0.7.2',
-        'python-dateutil==1.5',
-    ]
-    setup_args['tests_require'] = [
-        'mock',
-    ]
-    if os.getenv('NO_INSTALL_REQS'):
-        setup_args['install_requires'] = None
-        setup_args['tests_require'] = None
+setup_args['tests_require'] = test_deps
 
-setup(**setup_args)
+setup_args['extras_require'] = {
+    'test': [
+        'setuptools_trial',
+        'isort',
+        # spellcheck introduced in version 1.4.0
+        'pylint<1.7.0',
+        'pyenchant',
+        'flake8~=2.6.0',
+    ] + test_deps,
+    'bundle': [
+        "buildbot-www=={0}".format(bundle_version),
+        "buildbot-worker=={0}".format(bundle_version),
+        "buildbot-waterfall-view=={0}".format(bundle_version),
+        "buildbot-console-view=={0}".format(bundle_version),
+        "buildbot-grid-view=={0}".format(bundle_version),
+    ],
+    'tls': [
+        'Twisted[tls] ' + twisted_ver,
+        # There are bugs with extras inside extras:
+        # <https://github.com/pypa/pip/issues/3516>
+        # so we explicitly include Twisted[tls] dependencies.
+        'pyopenssl >= 16.0.0',
+        'service_identity',
+        'idna >= 0.6',
+    ],
+    'docs': [
+        'docutils<0.13.0',
+        'sphinx>1.4.0',
+        'sphinxcontrib-blockdiag',
+        'sphinxcontrib-spelling',
+        'pyenchant',
+        'docutils>=0.8',
+        'ramlfications',
+        'sphinx-jinja',
+        'towncrier'
+    ],
+}
+
+if '--help-commands' in sys.argv or 'trial' in sys.argv or 'test' in sys.argv:
+    setup_args['setup_requires'] = [
+        'setuptools_trial',
+    ]
+
+if os.getenv('NO_INSTALL_REQS'):
+    setup_args['install_requires'] = None
+    setup_args['extras_require'] = None
+
+if __name__ == '__main__':
+    setup(**setup_args)
 
 # Local Variables:
 # fill-column: 71

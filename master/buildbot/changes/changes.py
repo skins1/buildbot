@@ -13,28 +13,30 @@
 #
 # Copyright Buildbot Team Members
 
-from __future__ import with_statement
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import iteritems
+from future.utils import text_type
 
+import html  # py2: via future
 import time
 
-from buildbot.util import datetime2epoch
 from twisted.internet import defer
 from twisted.python import log
-from twisted.web import html
-from zope.interface import implements
+from zope.interface import implementer
 
 from buildbot import interfaces
 from buildbot import util
 from buildbot.process.properties import Properties
+from buildbot.util import datetime2epoch
 
 
+@implementer(interfaces.IStatusEvent)
 class Change:
 
     """I represent a single change to the source tree. This may involve several
     files, but they are all changed by the same person, and there is a change
     comment for the group as a whole."""
-
-    implements(interfaces.IStatusEvent)
 
     number = None
     branch = None
@@ -75,18 +77,19 @@ class Change:
             when = datetime2epoch(when)
         change.when = when
 
-        change.files = chdict['files'][:]
-        change.files.sort()
+        change.files = sorted(chdict['files'])
 
         change.properties = Properties()
-        for n, (v, s) in chdict['properties'].iteritems():
+        for n, (v, s) in iteritems(chdict['properties']):
             change.properties.setProperty(n, v, s)
 
         return defer.succeed(change)
 
     def __init__(self, who, files, comments, revision=None, when=None,
-                 branch=None, category=None, revlink='', properties={},
+                 branch=None, category=None, revlink='', properties=None,
                  repository='', codebase='', project='', _fromChdict=False):
+        if properties is None:
+            properties = {}
         # skip all this madness if we're being built from the database
         if _fromChdict:
             return
@@ -97,7 +100,7 @@ class Change:
         def none_or_unicode(x):
             if x is None:
                 return x
-            return unicode(x)
+            return text_type(x)
 
         self.revision = none_or_unicode(revision)
         now = util.now()
@@ -106,7 +109,8 @@ class Change:
         elif when > now:
             # this happens when the committing system has an incorrect clock, for example.
             # handle it gracefully
-            log.msg("received a Change with when > now; assuming the change happened now")
+            log.msg(
+                "received a Change with when > now; assuming the change happened now")
             self.when = now
         else:
             self.when = when
@@ -120,8 +124,7 @@ class Change:
         self.project = project
 
         # keep a sorted list of the files, for easier display
-        self.files = (files or [])[:]
-        self.files.sort()
+        self.files = sorted(files or [])
 
     def __setstate__(self, dict):
         self.__dict__ = dict
@@ -139,8 +142,23 @@ class Change:
             self.when, self.category, self.project, self.repository,
             self.codebase)
 
-    def __cmp__(self, other):
-        return self.number - other.number
+    def __eq__(self, other):
+        return self.number == other.number
+
+    def __ne__(self, other):
+        return self.number != other.number
+
+    def __lt__(self, other):
+        return self.number < other.number
+
+    def __le__(self, other):
+        return self.number <= other.number
+
+    def __gt__(self, other):
+        return self.number > other.number
+
+    def __ge__(self, other):
+        return self.number >= other.number
 
     def asText(self):
         data = ""
@@ -161,28 +179,28 @@ class Change:
         return data
 
     def asDict(self):
-        '''returns a dictonary with suitable info for html/mail rendering'''
-        result = {}
-
+        '''returns a dictionary with suitable info for html/mail rendering'''
         files = [dict(name=f) for f in self.files]
-        files.sort(cmp=lambda a, b: a['name'] < b['name'])
+        files.sort(key=lambda a: a['name'])
 
-        # Constant
-        result['number'] = self.number
-        result['branch'] = self.branch
-        result['category'] = self.category
-        result['who'] = self.getShortAuthor()
-        result['comments'] = self.comments
-        result['revision'] = self.revision
-        result['rev'] = self.revision
-        result['when'] = self.when
-        result['at'] = self.getTime()
-        result['files'] = files
-        result['revlink'] = getattr(self, 'revlink', None)
-        result['properties'] = self.properties.asList()
-        result['repository'] = getattr(self, 'repository', None)
-        result['codebase'] = getattr(self, 'codebase', '')
-        result['project'] = getattr(self, 'project', None)
+        result = {
+            # Constant
+            'number': self.number,
+            'branch': self.branch,
+            'category': self.category,
+            'who': self.getShortAuthor(),
+            'comments': self.comments,
+            'revision': self.revision,
+            'rev': self.revision,
+            'when': self.when,
+            'at': self.getTime(),
+            'files': files,
+            'revlink': getattr(self, 'revlink', None),
+            'properties': self.properties.asList(),
+            'repository': getattr(self, 'repository', None),
+            'codebase': getattr(self, 'codebase', ''),
+            'project': getattr(self, 'project', None)
+        }
         return result
 
     def getShortAuthor(self):

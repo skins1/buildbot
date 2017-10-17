@@ -13,10 +13,19 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+from future.utils import iteritems
+from future.utils import string_types
+
+import copy
+
+from twisted.internet import defer
+from twisted.python import log
+
 from buildbot import config
 from buildbot.process import buildstep
-from buildbot.status import results
-from twisted.internet import defer
+from buildbot.process import results
 
 
 class ShellArg(results.ResultComputingConfigMixin):
@@ -31,7 +40,7 @@ class ShellArg(results.ResultComputingConfigMixin):
                          "must not be None" % (name,))
         self.command = command
         self.logfile = logfile
-        for k, v in kwargs.iteritems():
+        for k, v in iteritems(kwargs):
             if k not in self.resultConfig:
                 config.error("the parameter '%s' is not "
                              "handled by ShellArg" % (k,))
@@ -40,13 +49,15 @@ class ShellArg(results.ResultComputingConfigMixin):
 
     def validateAttributes(self):
         # only make the check if we have a list
-        if not isinstance(self.command, (str, list)):
+        if not isinstance(self.command, (string_types, list)):
             config.error("%s is an invalid command, "
                          "it must be a string or a list" % (self.command,))
         if isinstance(self.command, list):
-            if not all([isinstance(x, str) for x in self.command]):
-                config.error("%s must only have strings in it" % (self.command,))
-        runConfParams = [(p_attr, getattr(self, p_attr)) for p_attr in self.resultConfig]
+            if not all([isinstance(x, string_types) for x in self.command]):
+                config.error("%s must only have strings in it" %
+                             (self.command,))
+        runConfParams = [(p_attr, getattr(self, p_attr))
+                         for p_attr in self.resultConfig]
         not_bool = [(p_attr, p_val) for (p_attr, p_val) in runConfParams if not isinstance(p_val,
                                                                                            bool)]
         if not_bool:
@@ -54,13 +65,15 @@ class ShellArg(results.ResultComputingConfigMixin):
 
     @defer.inlineCallbacks
     def getRenderingFor(self, build):
+        rv = copy.copy(self)
         for p_attr in self.publicAttributes:
             res = yield build.render(getattr(self, p_attr))
-            setattr(self, p_attr, res)
-        defer.returnValue(self)
+            setattr(rv, p_attr, res)
+        defer.returnValue(rv)
 
 
 class ShellSequence(buildstep.ShellMixin, buildstep.BuildStep):
+    last_command = None
     renderables = ['commands']
 
     def __init__(self, commands=None, **kwargs):
@@ -78,14 +91,19 @@ class ShellSequence(buildstep.ShellMixin, buildstep.BuildStep):
     def runShellSequence(self, commands):
         terminate = False
         if commands is None:
+            log.msg("After rendering, ShellSequence `commands` is None")
             defer.returnValue(results.EXCEPTION)
         overall_result = results.SUCCESS
         for arg in commands:
             if not isinstance(arg, ShellArg):
+                log.msg("After rendering, ShellSequence `commands` list "
+                        "contains something that is not a ShellArg")
                 defer.returnValue(results.EXCEPTION)
             try:
                 arg.validateAttributes()
-            except config.ConfigErrors:
+            except config.ConfigErrors as e:
+                log.msg("After rendering, ShellSequence `commands` is "
+                        "invalid: %s" % (e,))
                 defer.returnValue(results.EXCEPTION)
 
             # handle the command from the arg
@@ -93,8 +111,8 @@ class ShellSequence(buildstep.ShellMixin, buildstep.BuildStep):
             if not self.shouldRunTheCommand(command):
                 continue
 
-            # stick the command in self.command so that describe can use it
-            self.command = command
+            # keep the command around so we can describe it
+            self.last_command = command
 
             cmd = yield self.makeRemoteShellCommand(command=command,
                                                     stdioLogName=arg.logfile)

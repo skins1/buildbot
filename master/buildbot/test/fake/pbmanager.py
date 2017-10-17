@@ -13,8 +13,12 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot.util import service
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
+
+from buildbot.util import service
 
 
 class FakePBManager(service.AsyncMultiService):

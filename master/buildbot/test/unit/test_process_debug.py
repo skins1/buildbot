@@ -13,13 +13,18 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import mock
+
+from twisted.internet import defer
+from twisted.trial import unittest
 
 from buildbot import config
 from buildbot.process import debug
+from buildbot.test.fake import fakemaster
 from buildbot.util import service
-from twisted.internet import defer
-from twisted.trial import unittest
 
 
 class FakeManhole(service.AsyncService):
@@ -34,33 +39,34 @@ class TestDebugServices(unittest.TestCase):
 
     @defer.inlineCallbacks
     def test_reconfigService_manhole(self):
-        master = mock.Mock(name='master')
-        ds = debug.DebugServices(master)
-        ds.startService()
+        master = fakemaster.make_master()
+        ds = debug.DebugServices()
+        ds.setServiceParent(master)
+        yield master.startService()
 
         # start off with no manhole
-        yield ds.reconfigService(self.config)
+        yield ds.reconfigServiceWithBuildbotConfig(self.config)
 
         # set a manhole, fire it up
         self.config.manhole = manhole = FakeManhole()
-        yield ds.reconfigService(self.config)
+        yield ds.reconfigServiceWithBuildbotConfig(self.config)
 
         self.assertTrue(manhole.running)
         self.assertIdentical(manhole.master, master)
 
         # unset it, see it stop
         self.config.manhole = None
-        yield ds.reconfigService(self.config)
+        yield ds.reconfigServiceWithBuildbotConfig(self.config)
 
         self.assertFalse(manhole.running)
         self.assertIdentical(manhole.master, None)
 
         # re-start to test stopService
         self.config.manhole = manhole
-        yield ds.reconfigService(self.config)
+        yield ds.reconfigServiceWithBuildbotConfig(self.config)
 
-        # stop the service, and see that it unregisters
-        yield ds.stopService()
+        # disown the service, and see that it unregisters
+        yield ds.disownServiceParent()
 
         self.assertFalse(manhole.running)
         self.assertIdentical(manhole.master, None)

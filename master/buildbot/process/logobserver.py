@@ -13,12 +13,16 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from zope.interface import implementer
+
 from buildbot import interfaces
-from zope.interface import implements
 
 
+@implementer(interfaces.ILogObserver)
 class LogObserver(object):
-    implements(interfaces.ILogObserver)
 
     def setStep(self, step):
         self.step = step
@@ -108,7 +112,7 @@ class LineConsumerLogObserver(LogLineObserver):
         # data, since the observer may be instantiated during configuration as
         # well as for each execution of the step.
         self.generator = self.consumerFunction()
-        self.generator.next()
+        next(self.generator)
         # shortcut all remaining feed operations
         self.feed = self.generator.send
         self.feed(input)
@@ -155,16 +159,12 @@ class BufferLogObserver(LogObserver):
             self.stderr.append(data)
 
     def _get(self, chunks):
-        if chunks is None:
-            return [u'']
-        if len(chunks) > 1:
-            chunks = [''.join(chunks)]
-        elif not chunks:
-            chunks = [u'']
-        return chunks
+        if chunks is None or not chunks:
+            return u''
+        return u''.join(chunks)
 
     def getStdout(self):
-        return self._get(self.stdout)[0]
+        return self._get(self.stdout)
 
     def getStderr(self):
-        return self._get(self.stderr)[0]
+        return self._get(self.stderr)

@@ -13,13 +13,18 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+import json
+
 import sqlalchemy as sa
+
+from twisted.internet import defer
+from twisted.internet import reactor
 
 from buildbot.db import base
 from buildbot.util import epoch2datetime
-from buildbot.util import json
-from twisted.internet import defer
-from twisted.internet import reactor
 
 
 class StepsConnectorComponent(base.DBConnectorComponent):
@@ -63,9 +68,7 @@ class StepsConnectorComponent(base.DBConnectorComponent):
             return [self._stepdictFromRow(row) for row in res.fetchall()]
         return self.db.pool.do(thd)
 
-    def addStep(self, buildid, name, state_strings):
-        state_strings_json = json.dumps(state_strings)
-
+    def addStep(self, buildid, name, state_string):
         def thd(conn):
             tbl = self.db.model.steps
             # get the highest current number
@@ -79,7 +82,7 @@ class StepsConnectorComponent(base.DBConnectorComponent):
             # conflict, then the name is likely already taken.
             insert_row = dict(buildid=buildid, number=number,
                               started_at=None, complete_at=None,
-                              state_strings_json=state_strings_json,
+                              state_string=state_string,
                               urls_json='[]', name=name)
             try:
                 r = conn.execute(self.db.model.steps.insert(), insert_row)
@@ -118,11 +121,11 @@ class StepsConnectorComponent(base.DBConnectorComponent):
             conn.execute(q, started_at=started_at)
         return self.db.pool.do(thd)
 
-    def setStepStateStrings(self, stepid, state_strings):
+    def setStepStateString(self, stepid, state_string):
         def thd(conn):
             tbl = self.db.model.steps
             q = tbl.update(whereclause=(tbl.c.id == stepid))
-            conn.execute(q, state_strings_json=json.dumps(state_strings))
+            conn.execute(q, state_string=state_string)
         return self.db.pool.do(thd)
 
     def addURL(self, stepid, name, url, _racehook=None):
@@ -148,20 +151,24 @@ class StepsConnectorComponent(base.DBConnectorComponent):
             if _racehook is not None:
                 _racehook()
             urls = json.loads(row.urls_json)
-            urls.append(dict(name=name, url=url))
 
-            q = tbl.update(whereclause=wc)
-            conn.execute(q, urls_json=json.dumps(urls))
+            url_item = dict(name=name, url=url)
+
+            if url_item not in urls:
+                urls.append(url_item)
+                q = tbl.update(whereclause=wc)
+                conn.execute(q, urls_json=json.dumps(urls))
 
         return self.url_lock.run(lambda: self.db.pool.do(thd))
 
-    def finishStep(self, stepid, results, _reactor=reactor):
+    def finishStep(self, stepid, results, hidden, _reactor=reactor):
         def thd(conn):
             tbl = self.db.model.steps
             q = tbl.update(whereclause=(tbl.c.id == stepid))
             conn.execute(q,
                          complete_at=_reactor.seconds(),
-                         results=results)
+                         results=results,
+                         hidden=1 if hidden else 0)
         return self.db.pool.do(thd)
 
     def _stepdictFromRow(self, row):
@@ -176,6 +183,7 @@ class StepsConnectorComponent(base.DBConnectorComponent):
             buildid=row.buildid,
             started_at=mkdt(row.started_at),
             complete_at=mkdt(row.complete_at),
-            state_strings=json.loads(row.state_strings_json),
+            state_string=row.state_string,
             results=row.results,
-            urls=json.loads(row.urls_json))
+            urls=json.loads(row.urls_json),
+            hidden=bool(row.hidden))

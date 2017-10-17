@@ -13,20 +13,25 @@
 #
 # Copyright Buildbot Team Members
 
-from buildbot import config
-from buildbot.schedulers import base
-from buildbot.schedulers import dependent
-from buildbot.status.results import FAILURE
-from buildbot.status.results import SUCCESS
-from buildbot.status.results import WARNINGS
-from buildbot.test.fake import fakedb
-from buildbot.test.util import scheduler
+from __future__ import absolute_import
+from __future__ import print_function
+
 from twisted.internet import defer
 from twisted.trial import unittest
+
+from buildbot import config
+from buildbot.process.results import FAILURE
+from buildbot.process.results import SUCCESS
+from buildbot.process.results import WARNINGS
+from buildbot.schedulers import base
+from buildbot.schedulers import dependent
+from buildbot.test.fake import fakedb
+from buildbot.test.util import scheduler
 
 SUBMITTED_AT_TIME = 111111111
 COMPLETE_AT_TIME = 222222222
 OBJECTID = 33
+SCHEDULERID = 133
 UPSTREAM_NAME = u'uppy'
 
 
@@ -49,7 +54,10 @@ class Dependent(scheduler.SchedulerMixin, unittest.TestCase):
 
         sched = dependent.Dependent(name='n', builderNames=['b'],
                                     upstream=upstream)
-        self.attachScheduler(sched, OBJECTID, overrideBuildsetMethods=True)
+        self.attachScheduler(sched, OBJECTID, SCHEDULERID,
+                             overrideBuildsetMethods=True,
+                             createBuilderDB=True)
+
         return sched
 
     def assertBuildsetSubscriptions(self, bsids=None):
@@ -151,7 +159,7 @@ class Dependent(scheduler.SchedulerMixin, unittest.TestCase):
         # and check whether a buildset was added in response
         if expect_buildset:
             self.assertEqual(self.addBuildsetCalls, [
-                ('addBuildsetForSourceStamp', dict(
+                ('addBuildsetForSourceStamps', dict(
                     builderNames=None,  # defaults
                     external_idstring=None,
                     properties=None,
@@ -194,3 +202,29 @@ class Dependent(scheduler.SchedulerMixin, unittest.TestCase):
 
         # and check that it wrote the correct value back to the state
         self.db.state.assertState(OBJECTID, upstream_bsids=[11, 13])
+
+    @defer.inlineCallbacks
+    def test_enabled_callback(self):
+        sched = self.makeScheduler()
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
+        expectedValue = not sched.enabled
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, expectedValue)
+
+    @defer.inlineCallbacks
+    def test_disabled_activate(self):
+        sched = self.makeScheduler()
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.activate()
+        self.assertEqual(r, None)
+
+    @defer.inlineCallbacks
+    def test_disabled_deactivate(self):
+        sched = self.makeScheduler()
+        yield sched._enabledCallback(None, {'enabled': not sched.enabled})
+        self.assertEqual(sched.enabled, False)
+        r = yield sched.deactivate()
+        self.assertEqual(r, None)

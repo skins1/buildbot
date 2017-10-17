@@ -13,11 +13,15 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
+from twisted.internet import defer
+from twisted.trial import unittest
+
 from buildbot.data import connector
 from buildbot.data import root
 from buildbot.test.util import endpoint
-from twisted.internet import defer
-from twisted.trial import unittest
 
 
 class RootEndpoint(endpoint.EndpointMixin, unittest.TestCase):
@@ -51,7 +55,9 @@ class SpecEndpoint(endpoint.EndpointMixin, unittest.TestCase):
     def setUp(self):
         self.setUpEndpoint()
         # replace fakeConnector with real DataConnector
-        self.master.data = connector.DataConnector(self.master)
+        self.master.data.disownServiceParent()
+        self.master.data = connector.DataConnector()
+        self.master.data.setServiceParent(self.master)
 
     def tearDown(self):
         self.tearDownEndpoint()

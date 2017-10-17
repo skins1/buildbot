@@ -13,22 +13,26 @@
 #
 # Copyright Buildbot Team Members
 
-# This is a static resource type and set of endpoints uesd as common data by
+from __future__ import absolute_import
+from __future__ import print_function
+# This is a static resource type and set of endpoints used as common data by
 # tests.
+from future.utils import itervalues
+
+from twisted.internet import defer
 
 from buildbot.data import base
 from buildbot.data import types
-from twisted.internet import defer
 
 testData = {
-    13: {'id': 13, 'info': 'ok', 'success': True},
-    14: {'id': 14, 'info': 'failed', 'success': False},
-    15: {'id': 15, 'info': 'warned', 'success': True},
-    16: {'id': 16, 'info': 'skipped', 'success': True},
-    17: {'id': 17, 'info': 'ignored', 'success': True},
-    18: {'id': 18, 'info': 'unexp', 'success': False},
-    19: {'id': 19, 'info': 'todo', 'success': True},
-    20: {'id': 20, 'info': 'error', 'success': False},
+    13: {'id': 13, 'info': 'ok', 'success': True, 'tags': []},
+    14: {'id': 14, 'info': 'failed', 'success': False, 'tags': []},
+    15: {'id': 15, 'info': 'warned', 'success': True, 'tags': ['a', 'b', ]},
+    16: {'id': 16, 'info': 'skipped', 'success': True, 'tags': ['a']},
+    17: {'id': 17, 'info': 'ignored', 'success': True, 'tags': []},
+    18: {'id': 18, 'info': 'unexp', 'success': False, 'tags': []},
+    19: {'id': 19, 'info': 'todo', 'success': True, 'tags': []},
+    20: {'id': 20, 'info': 'error', 'success': False, 'tags': []},
 }
 
 
@@ -38,7 +42,20 @@ class TestsEndpoint(base.Endpoint):
 
     def get(self, resultSpec, kwargs):
         # results are sorted by ID for test stability
-        return defer.succeed(sorted(testData.values(), key=lambda v: v['id']))
+        return defer.succeed(sorted(itervalues(testData), key=lambda v: v['id']))
+
+
+class RawTestsEndpoint(base.Endpoint):
+    isCollection = False
+    isRaw = True
+    pathPatterns = "/rawtest"
+
+    def get(self, resultSpec, kwargs):
+        return defer.succeed({
+            "filename": "test.txt",
+            "mime-type": "text/test",
+            'raw': 'value'
+        })
 
 
 class FailEndpoint(base.Endpoint):
@@ -67,10 +84,11 @@ class TestEndpoint(base.Endpoint):
 class Test(base.ResourceType):
     name = "test"
     plural = "tests"
-    endpoints = [TestsEndpoint, TestEndpoint, FailEndpoint]
+    endpoints = [TestsEndpoint, TestEndpoint, FailEndpoint, RawTestsEndpoint]
 
     class EntityType(types.Entity):
         id = types.Integer()
         info = types.String()
         success = types.Boolean()
+        tags = types.List(of=types.String())
     entityType = EntityType(name)

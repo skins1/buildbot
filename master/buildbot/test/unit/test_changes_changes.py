@@ -13,15 +13,19 @@
 #
 # Copyright Buildbot Team Members
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import pprint
 import re
 import textwrap
 
+from twisted.internet import defer
+from twisted.trial import unittest
+
 from buildbot.changes import changes
 from buildbot.test.fake import fakedb
 from buildbot.test.fake import fakemaster
-from twisted.internet import defer
-from twisted.trial import unittest
 
 
 class Change(unittest.TestCase):
@@ -34,7 +38,7 @@ class Change(unittest.TestCase):
                       project='Buildbot'),
 
         fakedb.ChangeFile(changeid=23, filename='master/README.txt'),
-        fakedb.ChangeFile(changeid=23, filename='slave/README.txt'),
+        fakedb.ChangeFile(changeid=23, filename='worker/README.txt'),
 
         fakedb.ChangeProperty(changeid=23, property_name='notest',
                               property_value='["no","Change"]'),
@@ -55,9 +59,39 @@ class Change(unittest.TestCase):
             branch=u'warnerdb',
             revlink=u'http://warner/0e92a098b',
             properties={'notest': "no"},
-            files=[u'master/README.txt', u'slave/README.txt'],
+            files=[u'master/README.txt', u'worker/README.txt'],
             revision=u'deadbeef'))
         self.change23.number = 23
+
+        self.change24 = changes.Change(**dict(
+            category='devel',
+            repository=u'git://warner',
+            codebase=u'mainapp',
+            who=u'dustin',
+            when=266738405,
+            comments=u'fix whitespace again',
+            project=u'Buildbot',
+            branch=u'warnerdb',
+            revlink=u'http://warner/0e92a098c',
+            properties={'notest': "no"},
+            files=[u'master/README.txt', u'worker/README.txt'],
+            revision=u'deadbeef'))
+        self.change24.number = 24
+
+        self.change25 = changes.Change(**dict(
+            category='devel',
+            repository=u'git://warner',
+            codebase=u'mainapp',
+            who=u'dustin',
+            when=266738406,
+            comments=u'fix whitespace again',
+            project=u'Buildbot',
+            branch=u'warnerdb',
+            revlink=u'http://warner/0e92a098d',
+            properties={'notest': "no"},
+            files=[u'master/README.txt', u'worker/README.txt'],
+            revision=u'deadbeef'))
+        self.change25.number = 25
 
     @defer.inlineCallbacks
     def test_fromChdict(self):
@@ -98,7 +132,7 @@ class Change(unittest.TestCase):
         self.assertTrue(re.match(textwrap.dedent(u'''\
             Files:
              master/README.txt
-             slave/README.txt
+             worker/README.txt
             On: git://warner
             For: Buildbot
             At: .*
@@ -118,7 +152,7 @@ class Change(unittest.TestCase):
             'codebase': u'mainapp',
             'comments': u'fix whitespace',
             'files': [{'name': u'master/README.txt'},
-                      {'name': u'slave/README.txt'}],
+                      {'name': u'worker/README.txt'}],
             'number': 23,
             'project': u'Buildbot',
             'properties': [('notest', 'no', 'Change')],
@@ -145,3 +179,13 @@ class Change(unittest.TestCase):
 
     def test_getLogs(self):
         self.assertEqual(self.change23.getLogs(), {})
+
+    def test_compare(self):
+        self.assertEqual(self.change23, self.change23)
+        self.assertNotEqual(self.change24, self.change23)
+        self.assertGreater(self.change24, self.change23)
+        self.assertGreaterEqual(self.change24, self.change23)
+        self.assertGreaterEqual(self.change24, self.change24)
+        self.assertLessEqual(self.change24, self.change24)
+        self.assertLessEqual(self.change23, self.change24)
+        self.assertLess(self.change23, self.change25)
